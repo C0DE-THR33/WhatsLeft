@@ -1,0 +1,223 @@
+// SpendWise v1 — database schema
+// Postgres via Supabase. Run `npx prisma generate` / `npx prisma migrate dev` once
+// the project is scaffolded (see README note below for setup order).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Users
+// ─────────────────────────────────────────────────────────────
+
+// Mirrors Supabase's auth.users — this table does NOT create its own auth.
+// `id` is the same uuid Supabase Auth issues; a Postgres trigger (or an
+// app-level "on sign up" hook) inserts a matching row here so the rest of
+// the schema can have normal foreign keys instead of reaching into `auth.*`.
+model User {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  name      String?
+  createdAt DateTime @default(now())
+
+  linkedAccounts  LinkedAccount[]
+  consents        Consent[]
+  categories      Category[]
+  monthlyBudgets  MonthlyBudget[]
+  categoryBudgets CategoryBudget[]
+}
+
+// ─────────────────────────────────────────────────────────────
+// Account Aggregator: consent + linked accounts
+// ─────────────────────────────────────────────────────────────
+
+enum ConsentStatus {
+  PENDING
+  ACTIVE
+  PAUSED
+  REJECTED
+  REVOKED
+  EXPIRED
+}
+
+// One AA consent artefact (Setu's ConsentHandle). A single consent can cover
+// more than one account at the same FIP, so this is separate from
+// LinkedAccount rather than folded into it.
+model Consent {
+  id             String        @id @default(uuid())
+  userId         String
+  user           User          @relation(fields: [userId], references: [id])
+  setuConsentId  String        @unique // external id returned by Setu on create
+  status         ConsentStatus @default(PENDING)
+  fiTypes        String[]      // e.g. ["DEPOSIT"] — widen later for MF, etc.
+  purposeText    String
+  dataRangeFrom  DateTime
+  dataRangeTo    DateTime
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  linkedAccounts LinkedAccount[]
+
+  @@index([userId])
+}
+
+// One bank account the user has approved sharing. We only ever store the
+// masked account number the FIP hands back (e.g. "XXXXXX1234") — never a
+// full account number.
+model LinkedAccount {
+  id                   String    @id @default(uuid())
+  userId               String
+  user                 User      @relation(fields: [userId], references: [id])
+  consentId            String
+  consent              Consent   @relation(fields: [consentId], references: [id])
+  fipId                String    // Setu's FIP identifier, e.g. "HDFC-FIP"
+  bankName             String    // display name, e.g. "HDFC Bank"
+  maskedAccountNumber  String    // e.g. "••1234"
+  accountType          String    // SAVINGS | CURRENT, as reported by the FIP
+  isActive             Boolean   @default(true)
+  linkedAt             DateTime  @default(now())
+  lastSyncedAt         DateTime?
+
+  transactions Transaction[]
+
+  @@index([userId])
+}
+
+// ─────────────────────────────────────────────────────────────
+// Raw webhook log
+// ─────────────────────────────────────────────────────────────
+
+enum WebhookEventType {
+  CONSENT_STATUS
+  FI_NOTIFICATION
+}
+
+// Every Setu webhook lands here BEFORE we act on it. This is what makes
+// webhook handling idempotent and debuggable: a delivery we've already seen
+// (same setuReferenceId + eventType, or a re-delivered payload) is a no-op,
+// and a failed processing pass can be replayed from the stored payload
+// instead of being lost.
+model WebhookEvent {
+  id               String           @id @default(uuid())
+  eventType        WebhookEventType
+  setuReferenceId  String           // consentId or FI data sessionId
+  payload          Json
+  processedAt      DateTime?
+  createdAt        DateTime         @default(now())
+
+  @@index([setuReferenceId])
+  @@index([processedAt])
+}
+
+// ─────────────────────────────────────────────────────────────
+// Categories & transactions
+// ─────────────────────────────────────────────────────────────
+
+enum CategoryType {
+  EXPENSE
+  INCOME
+}
+
+// `userId` null = one of the shipped defaults (Food, Transport, Shopping,
+// Bills, Entertainment, Income); non-null = a category a user added later.
+// `icon` keys into the same icon-tile set used across the whole UI, so a
+// category renders identically everywhere (Home, Transactions, Budget,
+// Analytics, the categorize sheet).
+model Category {
+  id     String       @id @default(uuid())
+  userId String?
+  user   User?        @relation(fields: [userId], references: [id])
+  name   String
+  icon   String       // "food" | "transport" | "shopping" | "bills" | "entertainment" | "income" | ...
+  type   CategoryType @default(EXPENSE)
+
+  transactions    Transaction[]
+  categoryBudgets CategoryBudget[]
+
+  @@unique([userId, name])
+}
+
+enum TransactionType {
+  DEBIT
+  CREDIT
+}
+
+// How a transaction ended up with the category it has — drives whether the
+// UI shows "detected as Food" (AUTO) or nothing (MANUAL), and whether an
+// item still needs the "Set category" nudge (UNCATEGORIZED).
+enum CategorySource {
+  AUTO
+  MANUAL
+  UNCATEGORIZED
+}
+
+model Transaction {
+  id              String          @id @default(uuid())
+  linkedAccountId String
+  linkedAccount   LinkedAccount   @relation(fields: [linkedAccountId], references: [id])
+  externalTxnId   String          // id from the AA FI data payload — dedupes re-syncs
+  amount          Decimal         @db.Decimal(12, 2)
+  type            TransactionType
+  narration       String          // raw bank narration, unedited
+  merchant        String?         // cleaned/parsed display name, e.g. "Swiggy"
+  categoryId      String?
+  category        Category?       @relation(fields: [categoryId], references: [id])
+  categorySource  CategorySource  @default(UNCATEGORIZED)
+  note            String?
+  transactionDate DateTime
+  createdAt       DateTime        @default(now()) // when it landed in our system
+
+  @@unique([linkedAccountId, externalTxnId])
+  @@index([linkedAccountId, transactionDate])
+  @@index([categoryId])
+}
+
+// ─────────────────────────────────────────────────────────────
+// Budgets
+// ─────────────────────────────────────────────────────────────
+// Split in two rather than one nullable-category table: Postgres treats
+// every NULL as distinct for a unique constraint, so "one overall budget
+// per user per month" can't be enforced by a (userId, categoryId, month)
+// unique index if categoryId is nullable. Two tables keeps both invariants
+// enforceable and maps 1:1 onto the two cards on the Budget screen.
+
+model MonthlyBudget {
+  id          String   @id @default(uuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  periodMonth DateTime @db.Date // stored as the 1st of the month, e.g. 2026-09-01
+  amount      Decimal  @db.Decimal(12, 2)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([userId, periodMonth])
+}
+
+model CategoryBudget {
+  id          String   @id @default(uuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  categoryId  String
+  category    Category @relation(fields: [categoryId], references: [id])
+  periodMonth DateTime @db.Date
+  amount      Decimal  @db.Decimal(12, 2)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([userId, categoryId, periodMonth])
+}
+
+// ─────────────────────────────────────────────────────────────
+// Phase 2 — not modeled yet, left as a note rather than empty tables:
+//   - Bill / BillLineItem: once Bill Scanner ships, a scanned bill will
+//     probably attach to one Transaction (isSplit=true) and explode into
+//     several BillLineItems, each optionally its own category.
+//   - Investment: mutual fund / stock holdings, either entered manually or
+//     pulled via AA's investment FI types (separate scope from bank data).
+// Deferring both until those features are actually being built, rather
+// than guessing at a shape now.

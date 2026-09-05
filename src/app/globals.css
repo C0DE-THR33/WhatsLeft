@@ -1,0 +1,82 @@
+@import "tailwindcss";
+
+/*
+ * Design tokens — kept in exact lockstep with the design canvas
+ * (design/*.dc.html). If a color changes there, mirror it here.
+ */
+:root {
+  --background: oklch(0.975 0.006 240);
+  --surface: oklch(0.995 0.003 240);
+  --border: oklch(0.9 0.008 240);
+  --foreground: oklch(0.24 0.02 250);
+  --muted: oklch(0.52 0.02 250);
+  --faint: oklch(0.68 0.014 250);
+
+  --accent: oklch(0.55 0.13 175);
+  --accent-dark: oklch(0.4 0.12 175);
+  --accent-soft: oklch(0.94 0.035 175);
+  --accent-soft-fg: oklch(0.38 0.09 175);
+
+  --warn: oklch(0.72 0.15 65);
+  --warn-soft: oklch(0.95 0.045 65);
+  --warn-fg: oklch(0.45 0.1 60);
+
+  --danger: oklch(0.58 0.18 25);
+  --danger-soft: oklch(0.95 0.035 25);
+  --danger-fg: oklch(0.5 0.15 25);
+
+  --success: oklch(0.62 0.14 150);
+  --success-soft: oklch(0.95 0.04 150);
+  --success-fg: oklch(0.42 0.12 150);
+
+  /* Category colors — must match the icon key in lib/categories.ts */
+  --cat-food: oklch(0.68 0.14 55);
+  --cat-transport: oklch(0.62 0.12 240);
+  --cat-shopping: oklch(0.6 0.13 300);
+  --cat-bills: oklch(0.55 0.13 175);
+  --cat-entertainment: oklch(0.64 0.15 350);
+  --cat-income: oklch(0.6 0.14 150);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-border: var(--border);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+
+  --color-accent: var(--accent);
+  --color-accent-dark: var(--accent-dark);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-soft-fg: var(--accent-soft-fg);
+
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --color-warn-fg: var(--warn-fg);
+
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-danger-fg: var(--danger-fg);
+
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-success-fg: var(--success-fg);
+
+  --color-cat-food: var(--cat-food);
+  --color-cat-transport: var(--cat-transport);
+  --color-cat-shopping: var(--cat-shopping);
+  --color-cat-bills: var(--cat-bills);
+  --color-cat-entertainment: var(--cat-entertainment);
+  --color-cat-income: var(--cat-income);
+
+  --font-sans: var(--font-manrope);
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+a:hover {
+  color: var(--accent-dark);
+}

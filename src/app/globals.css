@@ -73,10 +73,19 @@
   --font-sans: var(--font-manrope);
 }
 
-a {
-  color: var(--accent);
-  text-decoration: none;
-}
-a:hover {
-  color: var(--accent-dark);
+/*
+ * @layer base, not a bare rule: Tailwind's utilities live in @layer
+ * utilities, and per the CSS cascade-layers spec, ANY unlayered rule beats
+ * ANY layered one regardless of specificity — a bare `a { color: ... }`
+ * here would silently win over every text-color utility on every link in
+ * the app (e.g. text-white on a <Link>), not just set a default.
+ */
+@layer base {
+  a {
+    color: var(--accent);
+    text-decoration: none;
+  }
+  a:hover {
+    color: var(--accent-dark);
+  }
 }

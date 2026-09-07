@@ -79,6 +79,7 @@ model LinkedAccount {
   bankName             String    // display name, e.g. "HDFC Bank"
   maskedAccountNumber  String    // e.g. "••1234"
   accountType          String    // SAVINGS | CURRENT, as reported by the FIP
+  currentBalance       Decimal?  @db.Decimal(12, 2) // from the FI data payload; null until the first sync
   isActive             Boolean   @default(true)
   linkedAt             DateTime  @default(now())
   lastSyncedAt         DateTime?

@@ -1,9 +1,11 @@
 import Link from "next/link";
 import { SignOutButton } from "@/components/auth/SignOutButton";
+import { getCurrentUser } from "@/lib/auth";
+import { getLinkedAccounts } from "@/lib/queries";
 
 // Full mockup: design/Settings.dc.html
-// TODO: db.linkedAccount for the accounts list, "Manage AA consent" opens
-// a per-consent revoke flow, preferences persist to the User row.
+// TODO: "Manage AA consent" opens a per-consent revoke flow, preferences
+// persist to the User row (currency/notifications aren't modeled there yet).
 
 const BANK_ICON = (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
@@ -17,10 +19,15 @@ const BANK_ICON = (
   </svg>
 );
 
-const ACCOUNTS = [
-  { name: "HDFC Bank ••1234", color: "oklch(0.6 0.14 25)" },
-  { name: "ICICI Bank ••5678", color: "oklch(0.6 0.13 45)" },
-  { name: "Axis Bank ••9012", color: "oklch(0.55 0.1 300)" },
+// Bank tiles don't carry a color in the schema (nothing to key one off of
+// for an arbitrary bank name) — cycle through a small fixed palette so
+// each row still reads as visually distinct, same as the design.
+const BANK_TILE_COLORS = [
+  "oklch(0.6 0.14 25)",
+  "oklch(0.6 0.13 45)",
+  "oklch(0.55 0.1 300)",
+  "oklch(0.55 0.13 240)",
+  "oklch(0.5 0.03 250)",
 ];
 
 const ChevronRight = () => (
@@ -35,7 +42,11 @@ const ChevronRight = () => (
   </svg>
 );
 
-export default function SettingsPage() {
+export default async function SettingsPage() {
+  const user = await getCurrentUser();
+  const accounts = await getLinkedAccounts(user.id);
+  const initial = (user.name ?? user.email)[0]?.toUpperCase() ?? "?";
+
   return (
     <main className="flex flex-col gap-5.5 p-5">
       <div className="flex items-center gap-3">
@@ -55,11 +66,11 @@ export default function SettingsPage() {
 
       <div className="flex items-center gap-3.5">
         <div className="flex h-[52px] w-[52px] items-center justify-center rounded-2xl bg-accent text-[19px] font-extrabold text-white">
-          M
+          {initial}
         </div>
         <div className="flex flex-col">
-          <span className="text-[15px] font-bold">Mark</span>
-          <span className="text-[12.5px] text-muted">mark@example.com</span>
+          <span className="text-[15px] font-bold">{user.name ?? "Add your name"}</span>
+          <span className="text-[12.5px] text-muted">{user.email}</span>
         </div>
       </div>
 
@@ -67,25 +78,37 @@ export default function SettingsPage() {
         <div className="mb-2.5 text-[11.5px] font-bold tracking-wide text-muted uppercase">
           Linked accounts
         </div>
-        <div className="rounded-[18px] border border-border bg-surface px-4">
-          {ACCOUNTS.map((a, i) => (
-            <div
-              key={a.name}
-              className={`flex items-center gap-3 py-3.5 ${i < ACCOUNTS.length - 1 ? "border-b border-border" : ""}`}
-            >
+        {accounts.length > 0 ? (
+          <div className="rounded-[18px] border border-border bg-surface px-4">
+            {accounts.map((a, i) => (
               <div
-                className="flex h-8 w-8 items-center justify-center rounded-[9px]"
-                style={{ background: a.color }}
+                key={a.id}
+                className={`flex items-center gap-3 py-3.5 ${i < accounts.length - 1 ? "border-b border-border" : ""}`}
               >
-                {BANK_ICON}
+                <div
+                  className="flex h-8 w-8 items-center justify-center rounded-[9px]"
+                  style={{ background: BANK_TILE_COLORS[i % BANK_TILE_COLORS.length] }}
+                >
+                  {BANK_ICON}
+                </div>
+                <span className="flex-1 text-[13.5px] font-bold">
+                  {a.bankName} {a.maskedAccountNumber}
+                </span>
+                <span
+                  className={`rounded-full px-2.5 py-0.5 text-[11px] font-bold ${
+                    a.isActive ? "bg-success-soft text-success-fg" : "bg-border text-muted"
+                  }`}
+                >
+                  {a.isActive ? "Active" : "Inactive"}
+                </span>
               </div>
-              <span className="flex-1 text-[13.5px] font-bold">{a.name}</span>
-              <span className="rounded-full bg-success-soft px-2.5 py-0.5 text-[11px] font-bold text-success-fg">
-                Active
-              </span>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        ) : (
+          <div className="rounded-[18px] border border-dashed border-border bg-surface p-5 text-center">
+            <p className="text-[12.5px] text-muted">No banks linked yet.</p>
+          </div>
+        )}
         <Link
           href="/connect-bank"
           className="mt-2.5 block text-center text-[13px] font-bold text-accent"

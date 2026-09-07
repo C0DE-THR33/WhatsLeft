@@ -51,11 +51,14 @@ src/
     nav/BottomNav.tsx                 shared tab bar
     transactions/CategoryTile.tsx     the icon-tile system used everywhere
     transactions/CategorizeSheet.tsx  the categorize bottom sheet
+    transactions/TransactionsList.tsx client half of Transactions (filter + categorize)
   lib/
     db.ts                             Prisma client singleton
+    queries.ts                        every real Prisma query, one per page's needs
     setu.ts                           Setu AA API wrapper
     auth.ts                           current-user lookup, backed by Supabase Auth
     categories.ts                     category metadata, single source of truth
+    dates.ts, donut.ts                pure helpers (month/day math, donut segment math)
     supabase/client.ts, server.ts, proxy.ts   Supabase SSR client factories
 prisma/
   schema.prisma                       full data model + design rationale in comments
@@ -74,27 +77,43 @@ This is a repository **structure**, not a finished app. Concretely:
   visitors to `/login?redirect=<path>`; `/login` sends a Supabase magic
   link; `/auth/callback` exchanges it for a session and creates the
   matching `User` row (see that model's comment in `prisma/schema.prisma`
-  for why that row can't just be `auth.users`); `lib/auth.ts`'s
-  `getCurrentUserId()` is what every API route calls to get the signed-in
-  user. **Not yet wired**: none of the `(app)/*` pages actually read the
-  signed-in user (Home still greets "Mark", not whoever's logged in) —
-  auth *gates* those pages now, but they don't *use* the session yet.
-  If `NEXT_PUBLIC_SUPABASE_URL`/`NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`
-  aren't set, `src/proxy.ts` logs a warning and skips enforcement entirely
-  (every route is open) rather than crashing every page — intentional, so
-  the app is still browsable before a Supabase project exists, but it
-  means "logged out" and "not configured" look the same until you set
-  those two vars.
+  for why that row can't just be `auth.users`). If
+  `NEXT_PUBLIC_SUPABASE_URL`/`NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` aren't
+  set, `src/proxy.ts` logs a warning and skips enforcement entirely (every
+  route is open) rather than crashing — intentional, so the app is still
+  browsable before a Supabase project exists. But the `(app)/*` pages
+  themselves now call Supabase directly too (to read the session for real
+  queries — see below), so `src/app/(app)/error.tsx` is what actually
+  keeps *those* pages from 500ing pre-setup: it catches
+  `SupabaseNotConfiguredError` and shows a plain "connect Supabase" message
+  instead of a crash. `/`, `/onboarding`, `/login`, `/connect-bank` don't
+  depend on that boundary — they handle the unconfigured case inline.
+- **Every `(app)/*` page reads real data through `lib/queries.ts`** —
+  no hardcoded sample arrays left. Home/Budget/Analytics all key off the
+  current calendar month; Transactions fetches the latest 100 rows and
+  the categorize sheet PATCHes the real API route (which now also checks
+  the transaction belongs to the caller — it didn't before). Spend that
+  has no category is tracked as its own "Uncategorized" slice rather than
+  silently dropped, so category percentages always add up to 100%.
+  `LinkedAccount.currentBalance` was added to the schema — the design's
+  "Total balance" card had nothing to sum without it. New users see real
+  empty states (no accounts/budget/transactions), not zeros dressed up as
+  data.
+  **Caveat**: none of this has run against a live database — no Supabase
+  project existed to test against. Every query passed TypeScript against
+  Prisma's generated types (which does catch wrong field/relation/enum
+  names), and the trickier pure logic (month-boundary rollover for the
+  6-month trend, category percentage math, date-bucketing) was verified
+  with standalone scripts — but the actual SQL Prisma generates has not
+  been executed. Worth a careful pass once `DATABASE_URL` points at a
+  real database, especially `getAnalyticsData`'s trend/highest-category
+  math.
 - `lib/setu.ts` and the `aa/*` routes follow the *shape* Setu's docs
   describe, but the exact request/response field names haven't been
   verified against a live sandbox call yet — there were no sandbox
   credentials available when this was written. Check
   [Setu's Postman collection](https://documenter.getpostman.com/view/16080598/TzzBoun5)
   against each `TODO` in `lib/setu.ts` before relying on it.
-- Every page under `app/(app)/` renders from hardcoded sample data (not
-  Prisma queries yet) but is otherwise a full port of its mockup in
-  `design/` — Transactions' category filter and the categorize sheet are
-  genuinely interactive, not static.
 
 ## Local setup
 

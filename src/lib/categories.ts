@@ -33,3 +33,18 @@ export const DEFAULT_CATEGORIES: Record<
 export function categoryColorClass(icon: CategoryIcon): string {
   return `bg-cat-${icon}`;
 }
+
+const KNOWN_ICONS = new Set<string>(Object.keys(DEFAULT_CATEGORIES));
+
+/**
+ * Prisma types Category.icon as plain `string` (it's not a DB enum — see
+ * the model's comment in prisma/schema.prisma), so anything read from the
+ * database needs narrowing before it can be handed to <CategoryTile>. Logs
+ * once per unexpected value and falls back to "shopping" rather than
+ * crashing the page render over one bad row.
+ */
+export function asCategoryIcon(icon: string): CategoryIcon {
+  if (KNOWN_ICONS.has(icon)) return icon as CategoryIcon;
+  console.warn(`Unknown category icon "${icon}" — falling back to "shopping"`);
+  return "shopping";
+}

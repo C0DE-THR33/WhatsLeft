@@ -2,40 +2,36 @@
 
 import { useState } from "react";
 import { CategoryTile, DashedTile } from "@/components/transactions/CategoryTile";
-import type { CategoryIcon } from "@/lib/categories";
+import type { CategoryOption } from "@/lib/queries";
 
 // Full mockup: design/TransactionAlert.dc.html — just the in-app sheet.
 // The OS-level push notification half of that mockup isn't page code at
 // all (it's a real system notification, wired up separately later); this
 // component is what it opens into.
 
-const PICKABLE: { icon: CategoryIcon; label: string }[] = [
-  { icon: "food", label: "Food" },
-  { icon: "transport", label: "Transport" },
-  { icon: "shopping", label: "Shopping" },
-  { icon: "bills", label: "Bills" },
-  { icon: "entertainment", label: "Fun" },
-];
-
 interface CategorizeSheetProps {
   merchant: string;
   amount: number;
   meta: string;
-  detectedIcon?: CategoryIcon;
+  categories: CategoryOption[];
+  detectedCategoryId?: string;
   onClose: () => void;
-  onSave: (icon: CategoryIcon, note: string, splitIntoItems: boolean) => void;
+  onSave: (categoryId: string, note: string, splitIntoItems: boolean) => void;
 }
 
 export function CategorizeSheet({
   merchant,
   amount,
   meta,
-  detectedIcon,
+  categories,
+  detectedCategoryId,
   onClose,
   onSave,
 }: CategorizeSheetProps) {
-  const [picked, setPicked] = useState<CategoryIcon | undefined>(detectedIcon);
+  const [picked, setPicked] = useState<string | undefined>(detectedCategoryId);
   const [note, setNote] = useState("");
+  const detected = categories.find((c) => c.id === detectedCategoryId);
+  const pickedCategory = categories.find((c) => c.id === picked);
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-foreground/30">
@@ -59,7 +55,7 @@ export function CategorizeSheet({
         </div>
 
         <div className="flex items-center gap-3">
-          {picked ? <CategoryTile icon={picked} /> : <DashedTile glyph="?" />}
+          {pickedCategory ? <CategoryTile icon={pickedCategory.icon} /> : <DashedTile glyph="?" />}
           <div className="flex flex-1 flex-col">
             <span className="text-base font-extrabold">{merchant}</span>
             <span className="text-[11.5px] text-muted">{meta}</span>
@@ -73,36 +69,30 @@ export function CategorizeSheet({
 
         <div className="flex flex-col gap-3">
           <span className="text-[12.5px] text-muted">
-            {detectedIcon ? (
+            {detected ? (
               <>
-                Detected as <b className="font-extrabold text-foreground">
-                  {PICKABLE.find((p) => p.icon === detectedIcon)?.label}
-                </b>{" "}
-                — tap to change
+                Detected as <b className="font-extrabold text-foreground">{detected.label}</b> — tap to
+                change
               </>
             ) : (
               "Pick a category"
             )}
           </span>
           <div className="grid grid-cols-4 gap-3">
-            {PICKABLE.map((p) => (
+            {categories.map((c) => (
               <button
-                key={p.icon}
-                onClick={() => setPicked(p.icon)}
+                key={c.id}
+                onClick={() => setPicked(c.id)}
                 className="flex flex-col items-center gap-1.5"
               >
-                <CategoryTile icon={p.icon} size="lg" selected={picked === p.icon} />
+                <CategoryTile icon={c.icon} size="lg" selected={picked === c.id} />
                 <span
-                  className={`text-[11.5px] ${picked === p.icon ? "font-extrabold" : "font-semibold text-muted"}`}
+                  className={`text-[11.5px] ${picked === c.id ? "font-extrabold" : "font-semibold text-muted"}`}
                 >
-                  {p.label}
+                  {c.label}
                 </span>
               </button>
             ))}
-            <div className="flex flex-col items-center gap-1.5">
-              <DashedTile glyph="+" size="lg" />
-              <span className="text-[11.5px] font-semibold text-faint">More</span>
-            </div>
           </div>
         </div>
 
@@ -122,8 +112,7 @@ export function CategorizeSheet({
             </div>
           </div>
           <span className="text-[11px] leading-[1.5] text-faint">
-            Splitting one purchase into line items uses Bill Scanner, coming in a future
-            update.
+            Splitting one purchase into line items uses Bill Scanner, coming in a future update.
           </span>
         </div>
 

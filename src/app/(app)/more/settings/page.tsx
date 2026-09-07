@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { SignOutButton } from "@/components/auth/SignOutButton";
 
 // Full mockup: design/Settings.dc.html
 // TODO: db.linkedAccount for the accounts list, "Manage AA consent" opens
@@ -127,9 +128,7 @@ export default function SettingsPage() {
         </div>
       </div>
 
-      <button className="mt-1.5 text-center text-[13.5px] font-bold text-danger-fg">
-        Log out
-      </button>
+      <SignOutButton />
     </main>
   );
 }

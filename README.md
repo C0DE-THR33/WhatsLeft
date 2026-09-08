@@ -9,6 +9,10 @@ built as a product-management + engineering portfolio project.
 - **Phase 2 (scoped, not built):** Bill Scanner (OCR + AI line-item
   categorization), Investments (manual entry, later AA mutual-fund data).
 
+Read [`CONVENTIONS.md`](./CONVENTIONS.md) before writing code here — it's
+the patterns, pitfalls, and specific version-pin reasoning this codebase
+runs on, distilled from actually building it once already.
+
 ## Stack
 
 | Layer | Choice |

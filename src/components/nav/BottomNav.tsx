@@ -5,115 +5,97 @@ import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
 
 const TABS = [
-  {
-    label: "Home",
-    href: "/home",
-    icon: (
-      <>
-        <path
-          d="M4 11.5L12 4l8 7.5"
-          stroke="currentColor"
-          strokeWidth="1.8"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-        <path
-          d="M6 10v9a1 1 0 0 0 1 1h3v-6h4v6h3a1 1 0 0 0 1-1v-9"
-          stroke="currentColor"
-          strokeWidth="1.8"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-      </>
-    ),
-  },
-  {
-    label: "Transactions",
-    href: "/transactions",
-    icon: (
-      <>
-        <rect x="5" y="3" width="14" height="18" rx="2" stroke="currentColor" strokeWidth="1.8" />
-        <path
-          d="M8 8h8M8 12h8M8 16h5"
-          stroke="currentColor"
-          strokeWidth="1.8"
-          strokeLinecap="round"
-        />
-      </>
-    ),
-  },
-  {
-    label: "Budget",
-    href: "/budget",
-    icon: (
-      <>
-        <rect x="3" y="6" width="18" height="13" rx="2" stroke="currentColor" strokeWidth="1.8" />
-        <path d="M3 10h18" stroke="currentColor" strokeWidth="1.8" />
-        <circle cx="16.5" cy="14" r="1.3" fill="currentColor" />
-      </>
-    ),
-  },
-  {
-    label: "Analytics",
-    href: "/analytics",
-    icon: (
-      <path
-        d="M5 19V10M12 19V5M19 19v-6"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-      />
-    ),
-  },
-  {
-    label: "More",
-    href: "/more",
-    icon: (
-      <>
-        <rect x="4" y="4" width="6" height="6" rx="1.3" stroke="currentColor" strokeWidth="1.8" />
-        <rect x="14" y="4" width="6" height="6" rx="1.3" stroke="currentColor" strokeWidth="1.8" />
-        <rect x="4" y="14" width="6" height="6" rx="1.3" stroke="currentColor" strokeWidth="1.8" />
-        <rect x="14" y="14" width="6" height="6" rx="1.3" stroke="currentColor" strokeWidth="1.8" />
-      </>
-    ),
-  },
-];
+  { href: "/home", label: "Home", icon: HomeIcon },
+  { href: "/transactions", label: "Transactions", icon: ListIcon },
+  { href: "/budget", label: "Budget", icon: PieIcon },
+  { href: "/analytics", label: "Analytics", icon: ChartIcon },
+  { href: "/more", label: "More", icon: MoreIcon },
+] as const;
 
-/**
- * Shared bottom tab bar. "More" is active for /more and every page nested
- * under it (bill-scanner, investments, settings) — those screens are one
- * level down in the hub, not their own top-level tab (see More.dc.html's
- * canvas annotation for why).
- */
 export function BottomNav() {
   const pathname = usePathname();
 
   return (
-    <nav className="flex h-16 items-stretch justify-between border-t border-border bg-surface px-1 pt-1.5 pb-2.5">
-      {TABS.map((tab) => {
-        const isActive =
-          tab.href === "/more"
-            ? pathname.startsWith("/more")
-            : pathname.startsWith(tab.href);
-
-        return (
-          <Link
-            key={tab.href}
-            href={tab.href}
-            className={cn(
-              "flex flex-1 flex-col items-center justify-center gap-[3px]",
-              isActive ? "text-accent" : "text-muted"
-            )}
-          >
-            <svg width="21" height="21" viewBox="0 0 24 24" fill="none">
-              {tab.icon}
-            </svg>
-            <span className={cn("text-[10.5px]", isActive ? "font-bold" : "font-semibold")}>
-              {tab.label}
-            </span>
-          </Link>
-        );
-      })}
+    <nav className="fixed inset-x-0 bottom-0 z-10 border-t border-border bg-surface pb-[env(safe-area-inset-bottom)]">
+      <div className="mx-auto flex max-w-md items-stretch justify-between px-2">
+        {TABS.map(({ href, label, icon: Icon }) => {
+          const active = pathname === href || pathname.startsWith(`${href}/`);
+          return (
+            <Link
+              key={href}
+              href={href}
+              className={cn(
+                "flex flex-1 flex-col items-center gap-1 py-2.5 text-[11px] font-medium",
+                active ? "text-accent" : "text-fg-muted",
+              )}
+            >
+              <Icon active={active} />
+              {label}
+            </Link>
+          );
+        })}
+      </div>
     </nav>
+  );
+}
+
+// Inline stroke-SVG, 20px grid, currentColor — matches the icon-tile
+// system's rules even though nav icons aren't category tiles
+// (CONVENTIONS.md #3).
+function iconProps(active: boolean) {
+  return {
+    width: 20,
+    height: 20,
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: active ? 2.25 : 1.75,
+    strokeLinecap: "round" as const,
+    strokeLinejoin: "round" as const,
+  };
+}
+
+function HomeIcon({ active }: { active: boolean }) {
+  return (
+    <svg {...iconProps(active)}>
+      <path d="M4 11.5 12 4l8 7.5" />
+      <path d="M6 10v9h12v-9" />
+    </svg>
+  );
+}
+
+function ListIcon({ active }: { active: boolean }) {
+  return (
+    <svg {...iconProps(active)}>
+      <path d="M8 6h12M8 12h12M8 18h12" />
+      <path d="M4 6h.01M4 12h.01M4 18h.01" />
+    </svg>
+  );
+}
+
+function PieIcon({ active }: { active: boolean }) {
+  return (
+    <svg {...iconProps(active)}>
+      <path d="M12 3v9l7.5 4.3" />
+      <circle cx="12" cy="12" r="9" />
+    </svg>
+  );
+}
+
+function ChartIcon({ active }: { active: boolean }) {
+  return (
+    <svg {...iconProps(active)}>
+      <path d="M4 20V10M12 20V4M20 20v-7" />
+    </svg>
+  );
+}
+
+function MoreIcon({ active }: { active: boolean }) {
+  return (
+    <svg {...iconProps(active)}>
+      <circle cx="12" cy="6" r="1.25" />
+      <circle cx="12" cy="12" r="1.25" />
+      <circle cx="12" cy="18" r="1.25" />
+    </svg>
   );
 }

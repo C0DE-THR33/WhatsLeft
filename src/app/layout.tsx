@@ -1,23 +1,28 @@
-import type { Metadata } from "next";
-import { Manrope } from "next/font/google";
+import type { Metadata, Viewport } from "next";
 import "./globals.css";
-
-const manrope = Manrope({
-  variable: "--font-manrope",
-  subsets: ["latin"],
-  weight: ["400", "500", "600", "700", "800"],
-});
 
 export const metadata: Metadata = {
   title: "SpendWise",
-  description:
-    "Automatic expense tracking via Account Aggregator, with budgets, analytics, and (soon) bill scanning and investments.",
+  description: "See where your money goes, without the spreadsheet.",
 };
 
-export default function RootLayout({ children }: LayoutProps<"/">) {
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#f7f7fb" },
+    { media: "(prefers-color-scheme: dark)", color: "#0e0e14" },
+  ],
+};
+
+export default function RootLayout({
+  children,
+}: Readonly<{
+  children: React.ReactNode;
+}>) {
   return (
-    <html lang="en" className={`${manrope.variable} h-full antialiased`}>
-      <body className="min-h-full flex flex-col bg-background text-foreground">
+    <html lang="en">
+      <body className="font-sans antialiased">
         {children}
       </body>
     </html>

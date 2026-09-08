@@ -1,42 +1,50 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
+import { getCurrentUserIdOrResponse } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { getCurrentUserId } from "@/lib/auth";
+import { CategorySource } from "@prisma/client";
 
-/**
- * Backs the categorize sheet (design/TransactionAlert.dc.html): confirm or
- * override a transaction's category, and optionally attach a note.
- * categorySource becomes MANUAL whenever a human picked the category here —
- * even if they just confirmed the AUTO suggestion — so re-categorization
- * events could be tracked separately from first-pass auto-detection later.
- */
-export async function PATCH(
-  req: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
-  const userId = await getCurrentUserId();
+// PATCH /api/transactions/:id/categorize — sets a transaction's category
+// (or clears it back to uncategorized with categoryId: null).
+//
+// getCurrentUserId() only proves *someone* is signed in, not that this
+// transaction is theirs (CONVENTIONS.md #5). A Transaction has no direct
+// userId — ownership only exists via linkedAccount.userId — so the guard
+// has to be `updateMany({ where: { id, linkedAccount: { userId } } })`,
+// checking `result.count === 0` for "not found or not yours." The first
+// version of this exact route shipped with a bare `update({ where: { id } })`
+// instead, which let any signed-in user recategorize anyone's transaction.
+export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const auth = await getCurrentUserIdOrResponse();
+  if ("response" in auth) return auth.response;
+  const { userId } = auth;
+
   const { id } = await params;
-  const { categoryId, note } = (await req.json()) as {
-    categoryId: string;
-    note?: string;
-  };
+  const { categoryId } = await request.json();
 
-  // updateMany (not update) + a userId ownership filter: this is the only
-  // check standing between one user and another user's transactions, since
-  // Transaction doesn't carry userId directly (only via linkedAccount) and
-  // Prisma's `update` has no built-in way to fail on a non-owned row.
+  if (categoryId !== null && typeof categoryId !== "string") {
+    return NextResponse.json({ error: "categoryId must be a string or null" }, { status: 400 });
+  }
+
+  if (categoryId) {
+    const category = await db.category.findFirst({
+      where: { id: categoryId, OR: [{ userId }, { userId: null }] },
+    });
+    if (!category) {
+      return NextResponse.json({ error: "Category not found" }, { status: 404 });
+    }
+  }
+
   const result = await db.transaction.updateMany({
     where: { id, linkedAccount: { userId } },
     data: {
       categoryId,
-      categorySource: "MANUAL",
-      note: note ?? undefined,
+      categorySource: categoryId ? CategorySource.MANUAL : null,
     },
   });
 
   if (result.count === 0) {
-    return NextResponse.json({ error: "Transaction not found" }, { status: 404 });
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
-  const transaction = await db.transaction.findUnique({ where: { id } });
-  return NextResponse.json(transaction);
+  return NextResponse.json({ ok: true });
 }

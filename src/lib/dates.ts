@@ -1,54 +1,46 @@
-/**
- * Plain Date math — no date-fns/dayjs dependency for what's a handful of
- * month-boundary and day-bucket calculations. All local-time, not UTC,
- * matching how a user thinks about "this month" / "today".
- */
+// Pure date-bucketing helpers — no database, no browser, so they get a
+// standalone verification script rather than being trusted on read
+// (CONVENTIONS.md #8). See scripts run during development: month-boundary
+// rollover across a year boundary is exactly the kind of edge case that's
+// easy to get backwards with plain Date arithmetic.
 
-export function startOfMonth(d: Date): Date {
-  return new Date(d.getFullYear(), d.getMonth(), 1);
+export interface MonthKey {
+  year: number;
+  month: number; // 1-12
 }
 
-export function startOfDay(d: Date): Date {
-  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+export function currentMonthKey(now: Date = new Date()): MonthKey {
+  return { year: now.getFullYear(), month: now.getMonth() + 1 };
 }
 
-export function addMonths(d: Date, n: number): Date {
-  return new Date(d.getFullYear(), d.getMonth() + n, 1);
+/** The [start, end) half-open range covering every millisecond of a given month. */
+export function monthRange({ year, month }: MonthKey): { start: Date; end: Date } {
+  const start = new Date(Date.UTC(year, month - 1, 1));
+  const end = new Date(Date.UTC(year, month, 1));
+  return { start, end };
 }
 
-export function monthLabel(d: Date): string {
-  return d.toLocaleDateString("en-US", { month: "short" });
+/** Steps a MonthKey by `delta` months, correctly rolling over a year boundary either direction. */
+export function shiftMonth({ year, month }: MonthKey, delta: number): MonthKey {
+  const zeroBased = month - 1 + delta;
+  const newYear = year + Math.floor(zeroBased / 12);
+  const newMonth = ((zeroBased % 12) + 12) % 12;
+  return { year: newYear, month: newMonth + 1 };
 }
 
-/** e.g. "September 2026" — for the Analytics month header. */
-export function monthYearLabel(d: Date): string {
-  return d.toLocaleDateString("en-US", { month: "long", year: "numeric" });
+const MONTH_LABELS = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+
+export function formatMonthLabel({ year, month }: MonthKey): string {
+  return `${MONTH_LABELS[month - 1]} ${year}`;
 }
 
-export type RecencyBucket = "Today" | "Yesterday" | "This week" | "Earlier";
-
-/** Which bucket a transaction date falls into, for the Transactions list's date grouping. */
-export function recencyBucket(date: Date, now = new Date()): RecencyBucket {
-  const today = startOfDay(now);
-  const target = startOfDay(date);
-  const dayMs = 24 * 60 * 60 * 1000;
-  const diffDays = Math.round((today.getTime() - target.getTime()) / dayMs);
-
-  if (diffDays <= 0) return "Today";
-  if (diffDays === 1) return "Yesterday";
-  if (diffDays <= 7) return "This week";
-  return "Earlier";
+export function formatShortDate(date: Date): string {
+  return new Intl.DateTimeFormat("en-IN", { day: "numeric", month: "short" }).format(date);
 }
 
-/** "Today" / "Yesterday" / "3 days ago" / "Aug 12" — for a transaction row's meta line. */
-export function relativeDayLabel(date: Date, now = new Date()): string {
-  const today = startOfDay(now);
-  const target = startOfDay(date);
-  const dayMs = 24 * 60 * 60 * 1000;
-  const diffDays = Math.round((today.getTime() - target.getTime()) / dayMs);
-
-  if (diffDays <= 0) return "Today";
-  if (diffDays === 1) return "Yesterday";
-  if (diffDays < 7) return `${diffDays} days ago`;
-  return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+export function isSameMonth(date: Date, key: MonthKey): boolean {
+  return date.getUTCFullYear() === key.year && date.getUTCMonth() + 1 === key.month;
 }

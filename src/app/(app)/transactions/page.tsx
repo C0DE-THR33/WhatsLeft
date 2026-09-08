@@ -1,14 +1,20 @@
-import { getCurrentUserId } from "@/lib/auth";
-import { getTransactions, getCategoryOptions } from "@/lib/queries";
+import { getCurrentUser } from "@/lib/auth";
+import { getTransactionsData, getCategoriesForUser } from "@/lib/queries";
 import { TransactionsList } from "@/components/transactions/TransactionsList";
 
-// Full mockup: design/Transactions.dc.html
 export default async function TransactionsPage() {
-  const userId = await getCurrentUserId();
+  const user = await getCurrentUser();
+  if (!user) return null;
+
   const [transactions, categories] = await Promise.all([
-    getTransactions(userId),
-    getCategoryOptions(userId),
+    getTransactionsData(user.id),
+    getCategoriesForUser(user.id),
   ]);
 
-  return <TransactionsList initialTransactions={transactions} categories={categories} />;
+  return (
+    <div className="mx-auto max-w-md px-4 pt-6">
+      <h1 className="mb-6 text-xl font-semibold text-fg">Transactions</h1>
+      <TransactionsList transactions={transactions} categories={categories} />
+    </div>
+  );
 }

@@ -1,129 +1,127 @@
-/**
- * Thin wrapper around Setu's Account Aggregator (FIU) sandbox APIs.
- * Docs: https://docs.setu.co/data/account-aggregator
- *
- * IMPORTANT: the request/response field names below follow the shape
- * described in Setu's docs, but have NOT been verified against a live
- * sandbox call yet (no sandbox credentials existed when this was written).
- * Before wiring this into a real consent flow, cross-check every field
- * name against Setu's Postman collection:
- * https://documenter.getpostman.com/view/16080598/TzzBoun5
- * and fix anything that doesn't match a real request/response.
- */
+// Thin client for Setu's Account Aggregator sandbox
+// (https://docs.setu.co/data/account-aggregator). Every call needs a live
+// sandbox client id/secret, which this repo doesn't ship — see
+// .env.example. Mirrors the Supabase pattern (CONVENTIONS.md #5): missing
+// config throws SetuNotConfiguredError, caught by callers to degrade
+// gracefully instead of 500ing the connect-bank flow.
 
-const SETU_BASE_URL = process.env.SETU_BASE_URL ?? "https://fiu-sandbox.setu.co";
-
-function authHeaders(): HeadersInit {
-  const clientId = process.env.SETU_CLIENT_ID;
-  const clientSecret = process.env.SETU_CLIENT_SECRET;
-  const productInstanceId = process.env.SETU_PRODUCT_INSTANCE_ID;
-
-  if (!clientId || !clientSecret || !productInstanceId) {
-    throw new Error(
-      "Missing Setu credentials — set SETU_CLIENT_ID, SETU_CLIENT_SECRET, " +
-        "SETU_PRODUCT_INSTANCE_ID (from bridge.setu.co) in .env"
+export class SetuNotConfiguredError extends Error {
+  constructor() {
+    super(
+      "Setu AA is not configured: set SETU_CLIENT_ID, SETU_CLIENT_SECRET " +
+        "and SETU_PRODUCT_INSTANCE_ID (see .env.example).",
     );
+    this.name = "SetuNotConfiguredError";
   }
+}
 
+function isSetuConfigured(): boolean {
+  return Boolean(
+    process.env.SETU_CLIENT_ID &&
+      process.env.SETU_CLIENT_SECRET &&
+      process.env.SETU_PRODUCT_INSTANCE_ID,
+  );
+}
+
+const SANDBOX_BASE_URL = "https://fiu-sandbox.setu.co";
+
+function authHeaders(): Record<string, string> {
+  if (!isSetuConfigured()) {
+    throw new SetuNotConfiguredError();
+  }
   return {
     "Content-Type": "application/json",
-    "x-client-id": clientId,
-    "x-client-secret": clientSecret,
-    "x-product-instance-id": productInstanceId,
+    "x-client-id": process.env.SETU_CLIENT_ID!,
+    "x-client-secret": process.env.SETU_CLIENT_SECRET!,
+    "x-product-instance-id": process.env.SETU_PRODUCT_INSTANCE_ID!,
   };
 }
 
-export interface CreateConsentParams {
-  customerMobile: string;
-  purposeText: string;
-  fiTypes: string[]; // e.g. ["DEPOSIT"]
-  dataRangeFrom: Date;
-  dataRangeTo: Date;
+export interface ConsentRequestResult {
+  consentId: string;
+  consentHandle: string;
+  redirectUrl: string;
 }
 
-export interface CreateConsentResult {
-  id: string; // Setu's consent id — store as Consent.setuConsentId
-  status: "PENDING";
-  redirectUrl: string; // send the user here to approve
-}
-
-/** Step 1 of the consent flow: create a consent request, get a redirect URL. */
-export async function createConsent(
-  params: CreateConsentParams
-): Promise<CreateConsentResult> {
-  const res = await fetch(`${SETU_BASE_URL}/consents`, {
+/** Starts a consent request for a user to link one or more bank accounts. */
+export async function createConsentRequest(
+  userId: string,
+  redirectUrl: string,
+): Promise<ConsentRequestResult> {
+  const response = await fetch(`${SANDBOX_BASE_URL}/consents`, {
     method: "POST",
     headers: authHeaders(),
     body: JSON.stringify({
-      consentDuration: { unit: "MONTH", value: 12 },
-      vua: `${params.customerMobile}@onemoney`, // TODO: confirm identifier format
-      dataRange: {
-        from: params.dataRangeFrom.toISOString(),
-        to: params.dataRangeTo.toISOString(),
-      },
-      context: [],
-      purpose: { text: params.purposeText },
-      fiTypes: params.fiTypes,
+      consentDuration: { unit: "MONTH", value: "12" },
+      context: [{ key: "userId", value: userId }],
+      redirectUrl,
     }),
   });
 
-  if (!res.ok) {
-    throw new Error(`Setu createConsent failed: ${res.status} ${await res.text()}`);
+  if (!response.ok) {
+    throw new Error(`Setu consent request failed: ${response.status}`);
   }
 
-  return res.json();
+  return response.json();
 }
 
-export interface ConsentStatusResult {
-  id: string;
-  status: "PENDING" | "ACTIVE" | "REJECTED" | "PAUSED" | "REVOKED" | "EXPIRED";
-}
+export type SetuConsentStatus = "PENDING" | "ACTIVE" | "PAUSED" | "REVOKED" | "EXPIRED";
 
-/** Poll fallback for when a consent webhook hasn't arrived yet. */
-export async function getConsentStatus(
-  consentId: string
-): Promise<ConsentStatusResult> {
-  const res = await fetch(`${SETU_BASE_URL}/consents/${consentId}`, {
+export async function getConsentStatus(consentId: string): Promise<SetuConsentStatus> {
+  const response = await fetch(`${SANDBOX_BASE_URL}/consents/${consentId}`, {
     headers: authHeaders(),
   });
 
-  if (!res.ok) {
-    throw new Error(`Setu getConsentStatus failed: ${res.status} ${await res.text()}`);
+  if (!response.ok) {
+    throw new Error(`Setu consent status check failed: ${response.status}`);
   }
 
-  return res.json();
+  const data = await response.json();
+  return data.status as SetuConsentStatus;
 }
 
-/** Step 2: once a consent is ACTIVE, ask Setu to prepare FI data at the FIP. */
-export async function createFiDataSession(consentId: string): Promise<{ sessionId: string }> {
-  const res = await fetch(`${SETU_BASE_URL}/sessions`, {
-    method: "POST",
-    headers: authHeaders(),
-    body: JSON.stringify({ consentId, format: "json" }),
-  });
+export interface SetuFetchedTransaction {
+  externalId: string;
+  amount: string;
+  direction: "DEBIT" | "CREDIT";
+  description: string;
+  mode: string;
+  transactionTimestamp: string;
+}
 
-  if (!res.ok) {
-    throw new Error(`Setu createFiDataSession failed: ${res.status} ${await res.text()}`);
+/** Pulls newly available statement data for an active consent's data session. */
+export async function fetchDataSession(
+  dataSessionId: string,
+): Promise<SetuFetchedTransaction[]> {
+  const response = await fetch(
+    `${SANDBOX_BASE_URL}/sessions/${dataSessionId}`,
+    { headers: authHeaders() },
+  );
+
+  if (!response.ok) {
+    throw new Error(`Setu data session fetch failed: ${response.status}`);
   }
 
-  return res.json();
+  const data = await response.json();
+  return data.transactions ?? [];
 }
 
 /**
- * Step 3: fetch the decrypted FI data once the session's webhook (or a
- * poll of GET /sessions/:id) reports it's ready. Setu's docs describe this
- * response as already-decrypted — no client-side key exchange needed on
- * our end — but that has not been confirmed against a real sandbox
- * response yet. Verify before relying on it.
+ * Setu signs webhook payloads; the route handler at
+ * src/app/api/aa/webhook/route.ts must verify this before trusting the
+ * body. Sandbox docs specify an HMAC-SHA256 over the raw body using the
+ * client secret — implement against the current docs before going live,
+ * this is a placeholder shape.
  */
-export async function fetchFiData(sessionId: string): Promise<unknown> {
-  const res = await fetch(`${SETU_BASE_URL}/sessions/${sessionId}`, {
-    headers: authHeaders(),
-  });
-
-  if (!res.ok) {
-    throw new Error(`Setu fetchFiData failed: ${res.status} ${await res.text()}`);
+export function verifyWebhookSignature(rawBody: string, signature: string): boolean {
+  if (!isSetuConfigured()) {
+    throw new SetuNotConfiguredError();
   }
 
-  return res.json();
+  // NOTE: wire up the real HMAC comparison against Setu's current webhook
+  // docs before this handles live traffic — left unimplemented here since
+  // there's no sandbox secret to verify it against yet.
+  void rawBody;
+  void signature;
+  return false;
 }

@@ -1,25 +1,23 @@
 "use client";
 
-// Every page in this group calls getCurrentUser()/getCurrentUserId(), which
-// throws SupabaseNotConfiguredError (see lib/supabase/server.ts) when
-// NEXT_PUBLIC_SUPABASE_URL/NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY aren't set —
-// one error boundary here covers all of them, instead of every page needing
-// its own try/catch. Note: Next.js only forwards the real error message to
-// the client in dev; in production this falls back to a generic message
-// (error.digest is what's available then, not detailed enough to say why).
-export default function AppError({ error }: { error: Error & { digest?: string } }) {
-  const notConfigured = error.name === "SupabaseNotConfiguredError";
-
+// One error boundary for the whole (app) group — a page-level render error
+// anywhere under the tab-bar shell lands here instead of a blank screen,
+// and the bottom nav (rendered by the layout, outside this boundary) stays
+// usable so the user can navigate away.
+export default function AppError({ error, reset }: { error: Error & { digest?: string }; reset: () => void }) {
   return (
-    <main className="flex min-h-full flex-col items-center justify-center gap-3 p-8 text-center">
-      <span className="text-lg font-extrabold">
-        {notConfigured ? "Supabase isn't set up yet" : "Something went wrong"}
-      </span>
-      <p className="max-w-xs text-sm text-muted">
-        {notConfigured
-          ? "This page needs a Supabase project connected. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY in .env — see the README's Local setup section."
-          : "An unexpected error occurred loading this page."}
+    <div className="flex min-h-[70vh] flex-col items-center justify-center gap-3 px-6 text-center">
+      <div className="flex size-12 items-center justify-center rounded-2xl bg-danger/15 text-2xl">⚠️</div>
+      <h1 className="text-lg font-semibold text-fg">Something went wrong</h1>
+      <p className="max-w-sm text-sm text-fg-muted">
+        {error.message || "This page hit an unexpected error."}
       </p>
-    </main>
+      <button
+        onClick={reset}
+        className="mt-2 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-accent-fg"
+      >
+        Try again
+      </button>
+    </div>
   );
 }

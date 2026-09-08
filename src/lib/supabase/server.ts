@@ -2,37 +2,45 @@ import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
 
 /**
- * Thrown instead of letting createServerClient's generic error propagate,
- * so callers (and src/app/(app)/error.tsx) can reliably tell "Supabase
- * isn't configured" apart from a real auth/data error by name, not by
- * matching Supabase's error message text.
+ * Thrown by every Supabase client factory when the required env vars
+ * aren't set. Callers (pages, route handlers) catch this and render a
+ * "not configured yet" state instead of letting a raw error 500 the page —
+ * see CONVENTIONS.md #5. This is what keeps a freshly cloned repo demoable
+ * before `.env` is filled in.
  */
 export class SupabaseNotConfiguredError extends Error {
   constructor() {
     super(
-      "Supabase isn't configured — set NEXT_PUBLIC_SUPABASE_URL and " +
-        "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY in .env (see README)."
+      "Supabase is not configured: set NEXT_PUBLIC_SUPABASE_URL and " +
+        "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY (see .env.example).",
     );
     this.name = "SupabaseNotConfiguredError";
   }
 }
 
+export function isSupabaseConfigured(): boolean {
+  return Boolean(
+    process.env.NEXT_PUBLIC_SUPABASE_URL &&
+      process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY,
+  );
+}
+
 /**
- * Supabase client for Server Components, Server Actions, and Route
- * Handlers. Server Components can't write cookies (only Proxy/Route
- * Handlers can), so setAll is a no-op there — that's fine as long as
- * src/proxy.ts is refreshing the session on every request.
+ * The one way server-side code (Server Components, Route Handlers, Server
+ * Actions) gets a Supabase client. Cookie writes are wrapped in try/catch:
+ * a Server Component can't set cookies, and that's expected — the session
+ * gets refreshed by src/proxy.ts on the next request instead.
  */
 export async function createClient() {
-  if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY) {
+  if (!isSupabaseConfigured()) {
     throw new SupabaseNotConfiguredError();
   }
 
   const cookieStore = await cookies();
 
   return createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL,
-    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY,
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!,
     {
       cookies: {
         getAll() {
@@ -41,14 +49,14 @@ export async function createClient() {
         setAll(cookiesToSet) {
           try {
             cookiesToSet.forEach(({ name, value, options }) =>
-              cookieStore.set(name, value, options)
+              cookieStore.set(name, value, options),
             );
           } catch {
-            // Called from a Server Component — ignorable since proxy.ts
-            // refreshes the session on every request anyway.
+            // Called from a Server Component — no-op, proxy.ts refreshes
+            // the session on the next request instead.
           }
         },
       },
-    }
+    },
   );
 }

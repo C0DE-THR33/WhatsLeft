@@ -1,320 +1,305 @@
-import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
-import { asCategoryIcon, type CategoryIcon } from "@/lib/categories";
-import { addMonths, monthLabel, monthYearLabel, relativeDayLabel, startOfMonth } from "@/lib/dates";
+import { toNum } from "@/lib/utils";
+import { asCategoryIcon, asCategoryColor, UNCATEGORIZED_LABEL } from "@/lib/categories";
+import { computeDonutSegments, type DonutResult } from "@/lib/donut";
+import { currentMonthKey, monthRange, type MonthKey } from "@/lib/dates";
+import { TransactionDirection } from "@prisma/client";
 
-function toNum(d: Prisma.Decimal | null | undefined): number {
-  return d ? d.toNumber() : 0;
-}
+// The entire query layer. One function per page's actual need, called
+// directly from a Server Component — not a generic repository/DAO
+// abstraction (CONVENTIONS.md #4). Shared logic between pages is a private
+// helper below, not duplicated in each page's own function.
 
-// ─────────────────────────────────────────────────────────────
-// Shared: this month's spend broken down by category
-// ─────────────────────────────────────────────────────────────
-
-export interface CategorySpend {
-  /** null = the synthetic "Uncategorized" bucket below, not a real Category row. */
+export interface CategoryBreakdownRow {
   categoryId: string | null;
-  icon: CategoryIcon | null;
-  label: string;
+  name: string;
+  icon: ReturnType<typeof asCategoryIcon>;
+  color: ReturnType<typeof asCategoryColor>;
   amount: number;
-  pct: number;
 }
 
-async function getCategoryBreakdown(userId: string, monthStart: Date) {
-  const monthEnd = addMonths(monthStart, 1);
-  const txns = await db.transaction.findMany({
+/**
+ * This month's spend grouped by category, for one user — shared by
+ * getHomeData and getAnalyticsData. Uncategorized spend gets its own row
+ * (id `null`) rather than being dropped, so percentages always sum to 100%
+ * (CONVENTIONS.md #4).
+ */
+async function getCategoryBreakdown(
+  userId: string,
+  range: { start: Date; end: Date },
+): Promise<{ rows: CategoryBreakdownRow[]; donut: DonutResult; total: number }> {
+  const grouped = await db.transaction.groupBy({
+    by: ["categoryId"],
     where: {
       linkedAccount: { userId },
-      type: "DEBIT",
-      transactionDate: { gte: monthStart, lt: monthEnd },
+      direction: TransactionDirection.DEBIT,
+      transactionDate: { gte: range.start, lt: range.end },
     },
-    include: { category: true },
+    _sum: { amount: true },
   });
 
-  const total = txns.reduce((sum, t) => sum + toNum(t.amount), 0);
+  const categoryIds = grouped.map((g) => g.categoryId).filter((id): id is string => id !== null);
+  const categories = categoryIds.length
+    ? await db.category.findMany({ where: { id: { in: categoryIds } } })
+    : [];
+  const categoryById = new Map(categories.map((c) => [c.id, c]));
 
-  const byCategory = new Map<string, CategorySpend>();
-  let uncategorized = 0;
-  for (const t of txns) {
-    if (!t.category) {
-      // Tracked separately, not silently dropped: excluding this from the
-      // breakdown would make every category's pct sum to less than 100%
-      // (and hide exactly the spend the categorize flow exists to surface).
-      uncategorized += toNum(t.amount);
-      continue;
+  const rows: CategoryBreakdownRow[] = grouped.map((g) => {
+    const amount = toNum(g._sum.amount);
+    if (g.categoryId === null) {
+      return { categoryId: null, name: UNCATEGORIZED_LABEL, icon: "other", color: "cat-other", amount };
     }
-    const existing = byCategory.get(t.category.id) ?? {
-      categoryId: t.category.id,
-      icon: asCategoryIcon(t.category.icon),
-      label: t.category.name,
-      amount: 0,
-      pct: 0,
+    const category = categoryById.get(g.categoryId);
+    return {
+      categoryId: g.categoryId,
+      name: category?.name ?? UNCATEGORIZED_LABEL,
+      icon: asCategoryIcon(category?.icon ?? "other"),
+      color: asCategoryColor(category?.color ?? "cat-other"),
+      amount,
     };
-    existing.amount += toNum(t.amount);
-    byCategory.set(t.category.id, existing);
-  }
+  });
 
-  const breakdown = [...byCategory.values()].sort((a, b) => b.amount - a.amount);
-  if (uncategorized > 0) {
-    breakdown.push({ categoryId: null, icon: null, label: "Uncategorized", amount: uncategorized, pct: 0 });
-  }
+  rows.sort((a, b) => b.amount - a.amount);
 
-  return {
-    total,
-    breakdown: breakdown.map((c) => ({ ...c, pct: total > 0 ? Math.round((c.amount / total) * 100) : 0 })),
-  };
+  const donut = computeDonutSegments(
+    rows.map((r) => ({ id: r.categoryId ?? "uncategorized", value: r.amount })),
+  );
+  const total = rows.reduce((sum, r) => sum + r.amount, 0);
+
+  return { rows, donut, total };
 }
 
-// ─────────────────────────────────────────────────────────────
-// Home dashboard
-// ─────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// Home
+// ---------------------------------------------------------------------------
 
-export interface DashboardTransaction {
+export interface HomeTransactionRow {
   id: string;
-  merchant: string;
-  icon: CategoryIcon | null;
   amount: number;
-  type: "DEBIT" | "CREDIT";
-  meta: string;
+  direction: TransactionDirection;
+  description: string;
+  merchantName: string | null;
+  transactionDate: Date;
+  category: { id: string; name: string; icon: string; color: string } | null;
 }
 
-export interface DashboardData {
-  totalBalance: number;
-  linkedAccountCount: number;
-  budgetAmount: number;
-  spentThisMonth: number;
-  categoryBreakdown: CategorySpend[];
-  recentTransactions: DashboardTransaction[];
+export interface HomeData {
+  totalSpentThisMonth: number;
+  budgetTotal: number | null;
+  budgetRemaining: number | null;
+  breakdown: CategoryBreakdownRow[];
+  donut: DonutResult;
+  recentTransactions: HomeTransactionRow[];
+  hasLinkedAccounts: boolean;
 }
 
-export async function getDashboardData(userId: string): Promise<DashboardData> {
-  const monthStart = startOfMonth(new Date());
+async function getRecentTransactions(userId: string, take: number): Promise<HomeTransactionRow[]> {
+  const rows = await db.transaction.findMany({
+    where: { linkedAccount: { userId } },
+    include: { category: true },
+    orderBy: { transactionDate: "desc" },
+    take,
+  });
 
-  const [accounts, monthlyBudget, { total: spentThisMonth, breakdown }, recent] = await Promise.all([
-    db.linkedAccount.findMany({ where: { userId, isActive: true } }),
-    db.monthlyBudget.findUnique({
-      where: { userId_periodMonth: { userId, periodMonth: monthStart } },
-    }),
-    getCategoryBreakdown(userId, monthStart),
-    db.transaction.findMany({
-      where: { linkedAccount: { userId } },
-      include: { category: true, linkedAccount: true },
-      orderBy: { transactionDate: "desc" },
-      take: 5,
-    }),
+  // Decimal never leaves the query layer — converted here, not in the page.
+  return rows.map((row) => ({ ...row, amount: toNum(row.amount) }));
+}
+
+export async function getHomeData(userId: string): Promise<HomeData> {
+  const key = currentMonthKey();
+  const range = monthRange(key);
+
+  const [breakdownResult, budget, recentTransactions, linkedAccountCount] = await Promise.all([
+    getCategoryBreakdown(userId, range),
+    db.monthlyBudget.findUnique({ where: { userId_year_month: { userId, year: key.year, month: key.month } } }),
+    getRecentTransactions(userId, 8),
+    db.linkedAccount.count({ where: { userId } }),
   ]);
 
+  const budgetTotal = budget ? toNum(budget.totalAmount) : null;
+
   return {
-    totalBalance: accounts.reduce((sum, a) => sum + toNum(a.currentBalance), 0),
-    linkedAccountCount: accounts.length,
-    budgetAmount: toNum(monthlyBudget?.amount),
-    spentThisMonth,
-    categoryBreakdown: breakdown,
-    recentTransactions: recent.map((t) => ({
-      id: t.id,
-      merchant: t.merchant ?? t.narration,
-      icon: t.category ? asCategoryIcon(t.category.icon) : null,
-      amount: toNum(t.amount),
-      type: t.type,
-      meta: `${t.category?.name ?? "Uncategorized"} · ${relativeDayLabel(t.transactionDate)} · ${t.linkedAccount.bankName} ${t.linkedAccount.maskedAccountNumber}`,
-    })),
+    totalSpentThisMonth: breakdownResult.total,
+    budgetTotal,
+    budgetRemaining: budgetTotal === null ? null : budgetTotal - breakdownResult.total,
+    breakdown: breakdownResult.rows,
+    donut: breakdownResult.donut,
+    recentTransactions,
+    hasLinkedAccounts: linkedAccountCount > 0,
   };
 }
 
-// ─────────────────────────────────────────────────────────────
-// Transactions list
-// ─────────────────────────────────────────────────────────────
-
-export interface TransactionRow {
-  id: string;
-  merchant: string;
-  categoryId: string | null;
-  categoryLabel: string | null;
-  icon: CategoryIcon | null;
-  amount: number;
-  type: "DEBIT" | "CREDIT";
-  bank: string;
-  transactionDate: string; // serialized for client components
-}
-
-export async function getTransactions(userId: string): Promise<TransactionRow[]> {
-  const txns = await db.transaction.findMany({
-    where: { linkedAccount: { userId } },
-    include: { category: true, linkedAccount: true },
-    orderBy: { transactionDate: "desc" },
-    take: 100,
-  });
-
-  return txns.map((t) => ({
-    id: t.id,
-    merchant: t.merchant ?? t.narration,
-    categoryId: t.categoryId,
-    categoryLabel: t.category?.name ?? null,
-    icon: t.category ? asCategoryIcon(t.category.icon) : null,
-    amount: toNum(t.amount),
-    type: t.type,
-    bank: `${t.linkedAccount.bankName} ${t.linkedAccount.maskedAccountNumber}`,
-    transactionDate: t.transactionDate.toISOString(),
-  }));
-}
-
-export interface CategoryOption {
-  id: string;
-  icon: CategoryIcon;
-  label: string;
-}
-
-/** Default categories plus this user's own, for the categorize sheet's grid. */
-export async function getCategoryOptions(userId: string): Promise<CategoryOption[]> {
-  const categories = await db.category.findMany({
-    where: { OR: [{ userId: null }, { userId }] },
-    orderBy: { name: "asc" },
-  });
-  return categories.map((c) => ({ id: c.id, icon: asCategoryIcon(c.icon), label: c.name }));
-}
-
-// ─────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 // Budget
-// ─────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 
 export interface BudgetCategoryRow {
   categoryId: string;
-  icon: CategoryIcon;
-  label: string;
+  name: string;
+  icon: ReturnType<typeof asCategoryIcon>;
+  color: ReturnType<typeof asCategoryColor>;
+  budgeted: number;
   spent: number;
-  budget: number;
 }
 
 export interface BudgetData {
-  monthlyBudgetAmount: number;
+  monthKey: MonthKey;
+  totalBudget: number | null;
   totalSpent: number;
-  categoryRows: BudgetCategoryRow[];
+  categories: BudgetCategoryRow[];
+  allCategories: Awaited<ReturnType<typeof getCategoriesForUser>>;
 }
 
-export async function getBudgetData(userId: string): Promise<BudgetData> {
-  const monthStart = startOfMonth(new Date());
+export async function getCategoriesForUser(userId: string) {
+  return db.category.findMany({
+    where: { OR: [{ userId: null }, { userId }] },
+    orderBy: { name: "asc" },
+  });
+}
 
-  const [monthlyBudget, categoryBudgets, { total: totalSpent, breakdown }] = await Promise.all([
+export async function getBudgetData(userId: string, monthKey: MonthKey = currentMonthKey()): Promise<BudgetData> {
+  const range = monthRange(monthKey);
+
+  const [monthlyBudget, breakdownResult, allCategories] = await Promise.all([
     db.monthlyBudget.findUnique({
-      where: { userId_periodMonth: { userId, periodMonth: monthStart } },
+      where: { userId_year_month: { userId, year: monthKey.year, month: monthKey.month } },
+      include: { categoryBudgets: { include: { category: true } } },
     }),
-    db.categoryBudget.findMany({
-      where: { userId, periodMonth: monthStart },
-      include: { category: true },
-    }),
-    getCategoryBreakdown(userId, monthStart),
+    getCategoryBreakdown(userId, range),
+    getCategoriesForUser(userId),
   ]);
 
-  const spentByCategoryId = new Map(breakdown.map((c) => [c.categoryId, c.amount]));
+  const spentByCategory = new Map(breakdownResult.rows.map((r) => [r.categoryId, r.amount]));
+
+  const categories: BudgetCategoryRow[] = (monthlyBudget?.categoryBudgets ?? []).map((cb) => ({
+    categoryId: cb.categoryId,
+    name: cb.category.name,
+    icon: asCategoryIcon(cb.category.icon),
+    color: asCategoryColor(cb.category.color),
+    budgeted: toNum(cb.amount),
+    spent: spentByCategory.get(cb.categoryId) ?? 0,
+  }));
 
   return {
-    monthlyBudgetAmount: toNum(monthlyBudget?.amount),
-    totalSpent,
-    categoryRows: categoryBudgets.map((cb) => ({
-      categoryId: cb.categoryId,
-      icon: asCategoryIcon(cb.category.icon),
-      label: cb.category.name,
-      budget: toNum(cb.amount),
-      spent: spentByCategoryId.get(cb.categoryId) ?? 0,
-    })),
+    monthKey,
+    totalBudget: monthlyBudget ? toNum(monthlyBudget.totalAmount) : null,
+    totalSpent: breakdownResult.total,
+    categories,
+    allCategories,
   };
 }
 
-// ─────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 // Analytics
-// ─────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 
-export interface TrendMonth {
-  label: string;
-  amount: number;
-  current: boolean;
+export interface MonthlyTrendPoint {
+  monthKey: MonthKey;
+  total: number;
 }
-
-/** A CategorySpend that's guaranteed to be a real category, never the synthetic "Uncategorized" row. */
-type RealCategorySpend = CategorySpend & { categoryId: string; icon: CategoryIcon };
 
 export interface AnalyticsData {
-  monthLabel: string;
-  totalSpent: number;
-  breakdown: CategorySpend[];
-  highest: RealCategorySpend | null;
-  /** % change vs. the same category last month — null if there's no prior-month figure to compare. */
-  highestChangePct: number | null;
-  trend: TrendMonth[];
+  monthKey: MonthKey;
+  breakdown: CategoryBreakdownRow[];
+  donut: DonutResult;
+  total: number;
+  trend: MonthlyTrendPoint[];
 }
 
-export async function getAnalyticsData(userId: string, monthsBack = 6): Promise<AnalyticsData> {
-  const now = new Date();
-  const monthStart = startOfMonth(now);
-  const prevMonthStart = addMonths(monthStart, -1);
-  const trendStart = addMonths(monthStart, -(monthsBack - 1));
+export async function getAnalyticsData(userId: string, monthKey: MonthKey = currentMonthKey()): Promise<AnalyticsData> {
+  const range = monthRange(monthKey);
+  const breakdownResult = await getCategoryBreakdown(userId, range);
 
-  const [{ total: totalSpent, breakdown }, prev, trendTxns] = await Promise.all([
-    getCategoryBreakdown(userId, monthStart),
-    getCategoryBreakdown(userId, prevMonthStart),
-    db.transaction.findMany({
-      where: { linkedAccount: { userId }, type: "DEBIT", transactionDate: { gte: trendStart } },
-      select: { amount: true, transactionDate: true },
+  // Trailing 6 months, oldest first, for the trend strip.
+  const trendKeys: MonthKey[] = [];
+  for (let i = 5; i >= 0; i--) {
+    const zeroBased = monthKey.month - 1 - i;
+    const year = monthKey.year + Math.floor(zeroBased / 12);
+    const month = ((zeroBased % 12) + 12) % 12;
+    trendKeys.push({ year, month: month + 1 });
+  }
+
+  const trend = await Promise.all(
+    trendKeys.map(async (key) => {
+      const { start, end } = monthRange(key);
+      const result = await db.transaction.aggregate({
+        where: {
+          linkedAccount: { userId },
+          direction: TransactionDirection.DEBIT,
+          transactionDate: { gte: start, lt: end },
+        },
+        _sum: { amount: true },
+      });
+      return { monthKey: key, total: toNum(result._sum.amount) };
     }),
+  );
+
+  return {
+    monthKey,
+    breakdown: breakdownResult.rows,
+    donut: breakdownResult.donut,
+    total: breakdownResult.total,
+    trend,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Transactions
+// ---------------------------------------------------------------------------
+
+export async function getTransactionsData(userId: string): Promise<HomeTransactionRow[]> {
+  const rows = await db.transaction.findMany({
+    where: { linkedAccount: { userId } },
+    include: { category: true },
+    orderBy: { transactionDate: "desc" },
+  });
+
+  return rows.map((row) => ({ ...row, amount: toNum(row.amount) }));
+}
+
+// ---------------------------------------------------------------------------
+// Settings
+// ---------------------------------------------------------------------------
+
+export async function getSettingsData(userId: string) {
+  const [user, linkedAccounts] = await Promise.all([
+    db.user.findUnique({ where: { id: userId } }),
+    db.linkedAccount.findMany({ where: { userId }, orderBy: { createdAt: "desc" } }),
   ]);
 
-  // Never "Uncategorized" — that's not an actionable insight the way a
-  // real category is, and it's appended after sorting so it could
-  // otherwise end up first when it's the only spend this month. The cast
-  // is safe: categoryId and icon are always set together (or both null)
-  // in getCategoryBreakdown, so filtering on one guarantees the other.
-  const highest = (breakdown.find((c) => c.categoryId !== null) ?? null) as RealCategorySpend | null;
-  const prevForHighest = highest ? prev.breakdown.find((c) => c.categoryId === highest.categoryId) : undefined;
-  const highestChangePct =
-    highest && prevForHighest && prevForHighest.amount > 0
-      ? Math.round(((highest.amount - prevForHighest.amount) / prevForHighest.amount) * 100)
-      : null;
-
-  const trendBuckets = new Map<string, number>();
-  for (let i = monthsBack - 1; i >= 0; i--) {
-    const d = addMonths(monthStart, -i);
-    trendBuckets.set(`${d.getFullYear()}-${d.getMonth()}`, 0);
-  }
-  for (const t of trendTxns) {
-    const d = startOfMonth(t.transactionDate);
-    const key = `${d.getFullYear()}-${d.getMonth()}`;
-    if (trendBuckets.has(key)) {
-      trendBuckets.set(key, (trendBuckets.get(key) ?? 0) + toNum(t.amount));
-    }
-  }
-  const trend: TrendMonth[] = [...trendBuckets.entries()].map(([key, amount]) => {
-    const [y, m] = key.split("-").map(Number);
-    const d = new Date(y, m, 1);
-    return {
-      label: monthLabel(d),
-      amount,
-      current: y === monthStart.getFullYear() && m === monthStart.getMonth(),
-    };
-  });
-
-  return { monthLabel: monthYearLabel(now), totalSpent, breakdown, highest, highestChangePct, trend };
+  return { user, linkedAccounts };
 }
 
-// ─────────────────────────────────────────────────────────────
-// Settings
-// ─────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// Investments
+// ---------------------------------------------------------------------------
 
-export interface LinkedAccountRow {
-  id: string;
-  bankName: string;
-  maskedAccountNumber: string;
-  isActive: boolean;
-}
-
-export async function getLinkedAccounts(userId: string): Promise<LinkedAccountRow[]> {
-  const accounts = await db.linkedAccount.findMany({
+export async function getInvestmentsData(userId: string) {
+  const investments = await db.investment.findMany({
     where: { userId },
-    orderBy: { linkedAt: "asc" },
+    orderBy: { createdAt: "desc" },
   });
-  return accounts.map((a) => ({
-    id: a.id,
-    bankName: a.bankName,
-    maskedAccountNumber: a.maskedAccountNumber,
-    isActive: a.isActive,
-  }));
+
+  const totalInvested = investments.reduce((sum, i) => sum + toNum(i.investedAmount), 0);
+  const totalCurrent = investments.reduce((sum, i) => sum + toNum(i.currentValue), 0);
+
+  return {
+    investments: investments.map((i) => ({
+      ...i,
+      investedAmount: toNum(i.investedAmount),
+      currentValue: toNum(i.currentValue),
+    })),
+    totalInvested,
+    totalCurrent,
+    totalGain: totalCurrent - totalInvested,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Bill scanner
+// ---------------------------------------------------------------------------
+
+export async function getBillScansData(userId: string) {
+  const scans = await db.billScan.findMany({ where: { userId }, orderBy: { createdAt: "desc" } });
+  return scans.map((scan) => ({ ...scan, amount: scan.amount === null ? null : toNum(scan.amount) }));
 }

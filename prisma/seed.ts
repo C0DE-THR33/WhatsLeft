@@ -1,34 +1,48 @@
+// Shipped defaults only — six default categories, one per icon in
+// lib/categories.ts's CATEGORY_ICONS. Safe to run against ANY environment,
+// any number of times (CONVENTIONS.md #6). Contrast with seed-demo.ts,
+// which needs a real signed-in user and is explicitly NOT safe to run
+// blindly.
+//
+// `Category.userId` is nullable (null = default), which is exactly the
+// shape a nullable-key upsert can't handle reliably — Postgres treats
+// every NULL as distinct for @@unique purposes, so `ON CONFLICT` never
+// fires. findFirst + conditional create instead (CONVENTIONS.md #6).
+
 import { PrismaClient } from "@prisma/client";
-import { DEFAULT_CATEGORIES } from "../src/lib/categories";
 
 const db = new PrismaClient();
 
-// Seeds the shipped default categories (userId: null) — see
-// src/lib/categories.ts for the single source of truth these come from.
-//
-// Deliberately findFirst + create rather than upsert: Category's
-// @@unique([userId, name]) can't back an upsert here because Postgres
-// treats every NULL as distinct for a unique constraint, so ON CONFLICT
-// never matches a null userId against another null userId — the same
-// caveat documented on MonthlyBudget/CategoryBudget in schema.prisma.
-// An upsert would silently insert a fresh duplicate row every re-run.
+const DEFAULT_CATEGORIES = [
+  { name: "Food & Dining", icon: "food", color: "cat-food" },
+  { name: "Transport", icon: "transport", color: "cat-transport" },
+  { name: "Shopping", icon: "shopping", color: "cat-shopping" },
+  { name: "Bills & Utilities", icon: "bills", color: "cat-bills" },
+  { name: "Entertainment", icon: "entertainment", color: "cat-entertainment" },
+  { name: "Other", icon: "other", color: "cat-other" },
+] as const;
+
 async function main() {
-  for (const [icon, meta] of Object.entries(DEFAULT_CATEGORIES)) {
+  for (const category of DEFAULT_CATEGORIES) {
     const existing = await db.category.findFirst({
-      where: { userId: null, name: meta.label },
+      where: { userId: null, name: category.name },
     });
-    if (!existing) {
-      await db.category.create({
-        data: { userId: null, name: meta.label, icon, type: meta.type },
-      });
+
+    if (existing) {
+      console.log(`Skipping "${category.name}" — already seeded.`);
+      continue;
     }
+
+    await db.category.create({ data: { ...category, userId: null } });
+    console.log(`Created default category "${category.name}".`);
   }
 }
 
 main()
-  .then(() => db.$disconnect())
-  .catch(async (err) => {
-    console.error(err);
+  .catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  })
+  .finally(async () => {
     await db.$disconnect();
-    process.exit(1);
   });

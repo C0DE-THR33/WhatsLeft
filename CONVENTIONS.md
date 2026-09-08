@@ -18,7 +18,7 @@ none.
 
 | Layer | Choice | Pinned at |
 |---|---|---|
-| Frontend | Next.js (App Router), TypeScript, Tailwind CSS v4 | Next 16.3.4 |
+| Frontend | Next.js (App Router), TypeScript, Tailwind CSS v4 | Next 16.3.4, `typescript` 5.9.3 |
 | Backend | Next.js Route Handlers (no separate API server) | — |
 | Database | PostgreSQL via Supabase | — |
 | ORM | Prisma, **classic CLI** | `prisma` / `@prisma/client` `6.19.3` |
@@ -37,11 +37,33 @@ classic CLI this whole project assumes. **Don't bump `prisma`/
 whether the classic CLI still exists at whatever version you're
 considering.**
 
+A fourth, found on a later rebuild: `npm install typescript` resolves to
+**7.x**, a version `eslint-config-next` 16.3.4's bundled `typescript-eslint`
+(8.70.0) explicitly rejects (`>=4.8.4 <6.1.0`) — `npm install` succeeds
+with an `ERESOLVE... overriding peer dependency` warning easy to scroll
+past, and the failure only shows up later as ESLint erroring on every
+file. `5.9.3` (latest 5.x) is what's pinned here. **Don't bump
+`typescript` past 5.x without checking that `eslint-config-next`'s
+`typescript-eslint` dependency has caught up.** Same story one layer up:
+`npm install eslint` resolves to **10.x**, which `eslint-config-next`'s
+own bundled `eslint-plugin-react`/`eslint-plugin-jsx-a11y` cap below —
+its own stated peer range (`>=9.0.0`, no upper bound) doesn't tell you
+that. `eslint` is pinned at `9.39.5` here for the same reason.
+
+And `eslint.config.mjs`'s shape itself moved on: the `FlatCompat` +
+`compat.extends("next/core-web-vitals", "next/typescript")` pattern every
+tutorial (and this project's first build) uses now throws
+`TypeError: Converting circular structure to JSON` against
+`eslint-config-next` 16.3.4 — that package's default export is already a
+flat `Linter.Config[]` array (`node_modules/eslint-config-next/dist/index.d.ts`),
+so the fix is `import nextConfig from "eslint-config-next"; export default
+[...nextConfig, { ignores: [...] }];`, no `FlatCompat` at all.
+
 More generally: **verify a library's current shape against its own
 current docs before writing code against it, every time, even for
 libraries you're confident about.** Training-data familiarity is exactly
 what makes a breaking change invisible until it breaks. This project hit
-three of these in one session (below) — none would have been caught by
+four of these across two builds (below) — none would have been caught by
 "I already know how this works."
 
 ---
@@ -98,6 +120,28 @@ The design canvas (`design/*.dc.html`) is the **source of truth** for
 visual decisions — colors, spacing, the icon-tile system, copy tone. Code
 should port it faithfully, then extend it, never invent a parallel
 aesthetic. Concretely:
+
+> ⚠️ **KNOWN DIVERGENCE — `globals.css` does not currently match the
+> canvas.** The September 2026 rebuild was done believing the canvas was
+> gone (the working tree had been wiped; the files were still in git
+> history, unnoticed until commit time), so its palette was invented from
+> scratch and is a *parallel aesthetic* — exactly what this section says
+> not to do. The differences are substantive, not cosmetic:
+>
+> | | Canvas (source of truth) | `globals.css` today |
+> |---|---|---|
+> | Color space | OKLCH | hex |
+> | Accent | teal `oklch(0.55 0.13 175)` | indigo `#4f46e5` |
+> | Ground | light-first | dark-first, light via `prefers-color-scheme` |
+> | Extra tokens | `--warn`, `--accent-soft`, `--text-faint`, `--accent-soft-text` | absent |
+> | Sixth category | `--cat-income` | `--cat-other` |
+>
+> The last row is the one with teeth: the canvas treats **income** as a
+> category, while `lib/categories.ts` ships **other**. Reconciling isn't
+> a find-and-replace on color values — it's a product question about
+> whether income is a spending category at all, and it touches
+> `CATEGORY_ICONS`, the seed data, and the `direction: CREDIT` handling
+> in `queries.ts`. Decide that before porting the palette.
 
 - **Every color is a CSS custom property**, defined once in
   `src/app/globals.css`'s `:root` and mapped into Tailwind's `@theme
@@ -174,7 +218,21 @@ duplicated.
   *only* place application code asks "who is signed in." It upserts the
   matching Prisma `User` row defensively (the real creation happens in
   `auth/callback/route.ts` right after sign-in; this is a second line of
-  defense for a session that predates that, not the primary path).
+  defense for a session that predates that, not the primary path). Both
+  are wrapped in React's `cache()` — the `(app)` layout calls
+  `getCurrentUser()` to guard the whole route group, and every page under
+  it calls it again for its own data. Without `cache()` that's a second
+  Supabase round-trip *and* a second Prisma upsert on every page load;
+  found by actually loading a page and reading the server log, not by
+  `tsc` (CONVENTIONS.md #8 again).
+- **`auth/callback/route.ts` must handle both email-link shapes**:
+  `?code=` (PKCE) *and* `?token_hash=&type=` (verifyOtp). PKCE only works
+  when the same browser that called `signInWithOtp()` also clicks the
+  link, because exchanging the code needs the `code_verifier` cookie that
+  call set — so a `code`-only callback works perfectly in local testing
+  and then breaks for any real user who requests the link on a laptop and
+  taps it in their phone's mail app. `token_hash` is also what Supabase's
+  default email templates and the admin `generateLink()` API produce.
 - **Every mutating API route checks both auth AND ownership.** `getCurrentUserId()`
   proves *someone* is signed in; it does not prove the resource being
   mutated belongs to them. A `Transaction` reaches its owner only via
@@ -187,7 +245,13 @@ duplicated.
   Supabase isn't configured**, not throw a raw error — see "SupabaseNotConfiguredError"
   below. This matters more than it sounds: it's the difference between a
   freshly cloned repo being demoable before `.env` is filled in, and
-  every single page 500ing.
+  every single page 500ing. Pages catch `SupabaseNotConfiguredError`
+  directly (they want a distinct "set up your .env" screen); API route
+  handlers call `lib/auth.ts`'s `getCurrentUserIdOrResponse()` instead of
+  `getCurrentUserId()`, which folds that same case into a 503 alongside
+  the ordinary 401. Found by actually clicking a button in the browser
+  with no `.env` present — `npm run build` has no reason to exercise this
+  path, so it stayed invisible until then (CONVENTIONS.md #8).
 
 ---
 
@@ -236,6 +300,17 @@ duplicated.
   needs, since migrations need prepared statements a transaction-mode
   pooler can't sustain. Get both from Supabase's **Connect → ORMs →
   Prisma** tab, pre-filled except the password.
+  **Don't hand-build either URL from the raw `db.<ref>.supabase.co`
+  hostname** — that hostname is IPv6-only on current Supabase projects,
+  and plenty of networks (this one included, at least without IPv6
+  routing) can resolve it but can't actually reach it, which shows up as
+  a generic `P1001: Can't reach database server` with no hint that IPv6
+  is the reason. Supabase's own **Session pooler** endpoint
+  (`*.pooler.supabase.com`, still port 5432, still session-mode) is the
+  IPv4-compatible equivalent and is what `DIRECT_URL` should actually
+  point to — it's right there in the same Connect → ORMs → Prisma tab
+  next to the transaction pooler URL, not something to construct by
+  hand.
 - **`.env.example` is the map of every variable the app needs, with a
   comment on where to get each one** — not just a name and an empty
   string. Someone cloning this repo should be able to go from
@@ -270,8 +345,8 @@ that caught every real bug in this project so far.
   against Prisma's generated types" is a real, specific claim; "this
   should work" is not.
 - **Before writing code against a library you're confident about,
-  check whether that confidence is current.** This project's three real
-  surprises this way:
+  check whether that confidence is current.** This project's real
+  surprises this way, across two builds:
   - `prisma` resolved to a completely different CLI (7.x) than the
     classic one every tutorial assumes.
   - Next.js 16 renamed `middleware.ts` → **`proxy.ts`**, and moved its
@@ -280,8 +355,11 @@ that caught every real bug in this project so far.
     `secret`, and the docs' own recommended cookie-handling shape
     (`getAll`/`setAll`, `getClaims()` over `getSession()`) had moved on
     from what training data would suggest.
+  - `typescript` resolved to 7.x, which `eslint-config-next`'s bundled
+    `typescript-eslint` rejects outright — `npm install` only warns, it
+    doesn't fail, so this one hides until ESLint runs.
 
-  All three would have shipped silently wrong without a docs check.
+  All four would have shipped silently wrong without a docs check.
   None of them were exotic — they were exactly the parts a confident
   engineer skips checking.
 

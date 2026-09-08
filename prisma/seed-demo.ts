@@ -1,204 +1,151 @@
-import { PrismaClient } from "@prisma/client";
+// Rich demo data for ONE named user — explicitly separate from seed.ts's
+// shipped defaults, and NOT safe to run blindly (CONVENTIONS.md #6). Takes
+// an identifying argument (the user's email) and fails loudly if that
+// precondition — a real signed-in user already exists — isn't met, rather
+// than silently creating an orphaned demo user of its own.
+//
+// Usage:
+//   npx tsx prisma/seed-demo.ts you@example.com
+
+import { PrismaClient, AccountType, ConsentStatus, TransactionDirection, InvestmentType } from "@prisma/client";
+import { currentMonthKey, shiftMonth, monthRange } from "../src/lib/dates";
 
 const db = new PrismaClient();
 
-/**
- * Seeds a rich demo dataset — linked accounts, transactions, and a budget —
- * for ONE existing user, found by email. Deliberately separate from
- * seed.ts (which only seeds the shipped default categories and is safe to
- * run against any environment): this script is demo/dev data, and it
- * requires a real signed-in user to attach to, since Prisma's User rows
- * are only ever created by the /auth/callback route after a real
- * Supabase sign-in (see that route, and the User model's comment in
- * schema.prisma, for why).
- *
- * Every number here matches design/*.dc.html and the numbers used
- * throughout this project's case study: ₹1,42,318 total balance, ₹20,000
- * monthly budget, and this month's 5 categorized totals (Food 4750 /
- * Bills 4500 / Shopping 2400 / Transport 1200 / Entertainment 600 =
- * ₹13,450, exactly what the design canvas shows). Zomato (₹610) is left
- * uncategorized on purpose, to demo the categorize sheet — which also
- * means the "spent so far" figure on Home/Budget correctly reads ₹14,060
- * (13,450 categorized + that 610), not 13,450: total spend is supposed
- * to include uncategorized spend (see getCategoryBreakdown's comment in
- * lib/queries.ts), the static design mockup just didn't have an
- * uncategorized transaction to account for.
- *
- * Usage: npm run db:seed:demo -- you@example.com
- */
+const MERCHANTS: Record<string, string[]> = {
+  "Food & Dining": ["Zomato", "Swiggy", "Starbucks", "Local Diner"],
+  "Transport": ["Uber", "Ola", "IRCTC", "Metro Card Recharge"],
+  "Shopping": ["Amazon", "Myntra", "Flipkart", "Decathlon"],
+  "Bills & Utilities": ["Airtel Postpaid", "Tata Power", "Jio Fiber", "LIC Premium"],
+  "Entertainment": ["Netflix", "BookMyShow", "Spotify", "PVR Cinemas"],
+};
+
+function randomAmount(min: number, max: number): string {
+  return (Math.random() * (max - min) + min).toFixed(2);
+}
+
+function randomDateInMonth(year: number, month: number): Date {
+  const { start, end } = monthRange({ year, month });
+  const ms = start.getTime() + Math.random() * (end.getTime() - start.getTime());
+  return new Date(ms);
+}
+
 async function main() {
   const email = process.argv[2];
   if (!email) {
-    console.error("Usage: npm run db:seed:demo -- you@example.com");
-    process.exit(1);
+    throw new Error("Usage: npx tsx prisma/seed-demo.ts <user-email>");
   }
 
   const user = await db.user.findUnique({ where: { email } });
   if (!user) {
-    console.error(
-      `No User row for "${email}". Sign in at /login with this email first — ` +
-        "the User row is created by src/app/auth/callback/route.ts on first sign-in."
+    throw new Error(
+      `No user with email "${email}" found. Sign in through the app once first — ` +
+        `this script seeds demo data for an existing user, it doesn't create one.`,
     );
-    process.exit(1);
   }
 
   const categories = await db.category.findMany({ where: { userId: null } });
-  const byIcon = new Map(categories.map((c) => [c.icon, c]));
-  const need = ["food", "transport", "shopping", "bills", "entertainment", "income"];
-  const missing = need.filter((icon) => !byIcon.has(icon));
-  if (missing.length > 0) {
-    console.error(`Missing default categories: ${missing.join(", ")}. Run "npm run db:seed" first.`);
-    process.exit(1);
+  if (categories.length === 0) {
+    throw new Error(`No default categories found. Run "npm run db:seed" first.`);
   }
-  const food = byIcon.get("food")!;
-  const transport = byIcon.get("transport")!;
-  const shopping = byIcon.get("shopping")!;
-  const bills = byIcon.get("bills")!;
-  const entertainment = byIcon.get("entertainment")!;
-  const income = byIcon.get("income")!;
+  const categoryByName = new Map(categories.map((c) => [c.name, c]));
 
-  // ---- Linked accounts (+ one Consent each — LinkedAccount requires one) ----
-  const banks = [
-    { fipId: "HDFC-FIP", bankName: "HDFC Bank", masked: "••1234", balance: 98000 },
-    { fipId: "ICICI-FIP", bankName: "ICICI Bank", masked: "••5678", balance: 32000 },
-    { fipId: "AXIS-FIP", bankName: "Axis Bank", masked: "••9012", balance: 12318 },
-  ];
-  const now = new Date();
-  const oneYearAgo = new Date(now);
-  oneYearAgo.setFullYear(now.getFullYear() - 1);
+  const linkedAccount = await db.linkedAccount.create({
+    data: {
+      userId: user.id,
+      fipId: "DEMO-FIP",
+      fipName: "Demo Bank",
+      maskedAccountNumber: "XXXXXXXX4321",
+      accountType: AccountType.SAVINGS,
+      consentId: "demo-consent-1",
+      consentStatus: ConsentStatus.ACTIVE,
+      consentExpiresAt: shiftMonthDate(12),
+      lastSyncedAt: new Date(),
+    },
+  });
+  console.log(`Created linked account for ${email}.`);
 
-  const accounts: Record<string, string> = {}; // fipId -> LinkedAccount.id
-  for (const bank of banks) {
-    const consent = await db.consent.create({
-      data: {
-        userId: user.id,
-        setuConsentId: `demo-consent-${bank.fipId}`,
-        status: "ACTIVE",
-        fiTypes: ["DEPOSIT"],
-        purposeText: "Track transactions and spending in SpendWise",
-        dataRangeFrom: oneYearAgo,
-        dataRangeTo: now,
-      },
-    });
-    const account = await db.linkedAccount.create({
-      data: {
-        userId: user.id,
-        consentId: consent.id,
-        fipId: bank.fipId,
-        bankName: bank.bankName,
-        maskedAccountNumber: bank.masked,
-        accountType: "SAVINGS",
-        currentBalance: bank.balance,
-        lastSyncedAt: now,
-      },
-    });
-    accounts[bank.fipId] = account.id;
+  const thisMonth = currentMonthKey();
+  let created = 0;
+
+  for (let monthsAgo = 0; monthsAgo < 3; monthsAgo++) {
+    const key = shiftMonth(thisMonth, -monthsAgo);
+    const transactionCount = monthsAgo === 0 ? 14 : 22;
+
+    for (let i = 0; i < transactionCount; i++) {
+      const categoryNames = Object.keys(MERCHANTS);
+      const categoryName = categoryNames[Math.floor(Math.random() * categoryNames.length)];
+      const merchants = MERCHANTS[categoryName];
+      const merchantName = merchants[Math.floor(Math.random() * merchants.length)];
+      const category = categoryByName.get(categoryName);
+
+      // ~10% left deliberately uncategorized, so the "uncategorized" row
+      // in the breakdown has something real to show (CONVENTIONS.md #4).
+      const leaveUncategorized = Math.random() < 0.1;
+
+      await db.transaction.create({
+        data: {
+          linkedAccountId: linkedAccount.id,
+          externalId: `demo-${key.year}-${key.month}-${i}`,
+          amount: randomAmount(150, 4500),
+          direction: TransactionDirection.DEBIT,
+          description: `${merchantName} purchase`,
+          merchantName,
+          mode: "UPI",
+          transactionDate: randomDateInMonth(key.year, key.month),
+          categoryId: leaveUncategorized ? null : category?.id,
+        },
+      });
+      created++;
+    }
   }
+  console.log(`Created ${created} demo transactions across 3 months.`);
 
-  // ---- This month's transactions — named + rounding entries so each
-  // category lands exactly on the design's numbers ----
-  const daysAgo = (n: number) => {
-    const d = new Date(now);
-    d.setDate(d.getDate() - n);
-    return d;
-  };
-
-  interface SeedTxn {
-    id: string;
-    account: string;
-    merchant: string;
-    narration: string;
-    amount: number;
-    type: "DEBIT" | "CREDIT";
-    categoryId: string | null;
-    date: Date;
-  }
-
-  const thisMonth: SeedTxn[] = [
-    { id: "txn-swiggy", account: "HDFC-FIP", merchant: "Swiggy", narration: "UPI-SWIGGY-450-TODAY", amount: 450, type: "DEBIT", categoryId: food.id, date: daysAgo(0) },
-    { id: "txn-grocery", account: "HDFC-FIP", merchant: "Grocery Store", narration: "POS-BIGBASKET-4300", amount: 4300, type: "DEBIT", categoryId: food.id, date: daysAgo(3) },
-    { id: "txn-uber", account: "ICICI-FIP", merchant: "Uber", narration: "UPI-UBER-180-TODAY", amount: 180, type: "DEBIT", categoryId: transport.id, date: daysAgo(0) },
-    { id: "txn-metro", account: "ICICI-FIP", merchant: "Metro Card Recharge", narration: "UPI-DMRC-1020", amount: 1020, type: "DEBIT", categoryId: transport.id, date: daysAgo(4) },
-    { id: "txn-zomato", account: "ICICI-FIP", merchant: "Zomato", narration: "UPI-ZOMATO-610-TODAY", amount: 610, type: "DEBIT", categoryId: null, date: daysAgo(0) },
-    { id: "txn-amazon", account: "HDFC-FIP", merchant: "Amazon", narration: "POS-AMAZON-1299", amount: 1299, type: "DEBIT", categoryId: shopping.id, date: daysAgo(1) },
-    { id: "txn-myntra", account: "HDFC-FIP", merchant: "Myntra", narration: "POS-MYNTRA-1101", amount: 1101, type: "DEBIT", categoryId: shopping.id, date: daysAgo(5) },
-    { id: "txn-electricity", account: "ICICI-FIP", merchant: "Electricity Bill", narration: "AUTOPAY-BESCOM-1850", amount: 1850, type: "DEBIT", categoryId: bills.id, date: daysAgo(1) },
-    { id: "txn-broadband", account: "ICICI-FIP", merchant: "Broadband Bill", narration: "AUTOPAY-ACT-2650", amount: 2650, type: "DEBIT", categoryId: bills.id, date: daysAgo(6) },
-    { id: "txn-netflix", account: "HDFC-FIP", merchant: "Netflix", narration: "UPI-NETFLIX-499", amount: 499, type: "DEBIT", categoryId: entertainment.id, date: daysAgo(2) },
-    { id: "txn-spotify", account: "HDFC-FIP", merchant: "Spotify", narration: "UPI-SPOTIFY-101", amount: 101, type: "DEBIT", categoryId: entertainment.id, date: daysAgo(7) },
-    { id: "txn-salary", account: "HDFC-FIP", merchant: "Salary credit", narration: "NEFT-SALARY-CREDIT-45000", amount: 45000, type: "CREDIT", categoryId: income.id, date: daysAgo(2) },
-  ];
-
-  // ---- Prior months — one lump transaction each, sized to match the
-  // trend bars in design/Analytics.dc.html. August is split so the
-  // "highest category" +18%-vs-last-month insight comes out to the same
-  // figure as the design (Food: 4025 -> 4750 this month).
-  const monthsAgo = (n: number) => {
-    const d = new Date(now.getFullYear(), now.getMonth() - n, 5);
-    return d;
-  };
-  const priorMonths: SeedTxn[] = [
-    { id: "txn-apr-lump", account: "HDFC-FIP", merchant: "April spending", narration: "MISC-APR", amount: 15200, type: "DEBIT", categoryId: bills.id, date: monthsAgo(5) },
-    { id: "txn-may-lump", account: "HDFC-FIP", merchant: "May spending", narration: "MISC-MAY", amount: 16800, type: "DEBIT", categoryId: bills.id, date: monthsAgo(4) },
-    { id: "txn-jun-lump", account: "HDFC-FIP", merchant: "June spending", narration: "MISC-JUN", amount: 14100, type: "DEBIT", categoryId: bills.id, date: monthsAgo(3) },
-    { id: "txn-jul-lump", account: "HDFC-FIP", merchant: "July spending", narration: "MISC-JUL", amount: 17300, type: "DEBIT", categoryId: bills.id, date: monthsAgo(2) },
-    { id: "txn-aug-food", account: "HDFC-FIP", merchant: "August groceries", narration: "MISC-AUG-FOOD", amount: 4025, type: "DEBIT", categoryId: food.id, date: monthsAgo(1) },
-    { id: "txn-aug-transport", account: "ICICI-FIP", merchant: "August transport", narration: "MISC-AUG-TRANSPORT", amount: 2053, type: "DEBIT", categoryId: transport.id, date: monthsAgo(1) },
-    { id: "txn-aug-shopping", account: "HDFC-FIP", merchant: "August shopping", narration: "MISC-AUG-SHOPPING", amount: 4105, type: "DEBIT", categoryId: shopping.id, date: monthsAgo(1) },
-    { id: "txn-aug-bills", account: "ICICI-FIP", merchant: "August bills", narration: "MISC-AUG-BILLS", amount: 7690, type: "DEBIT", categoryId: bills.id, date: monthsAgo(1) },
-    { id: "txn-aug-entertainment", account: "HDFC-FIP", merchant: "August entertainment", narration: "MISC-AUG-FUN", amount: 1027, type: "DEBIT", categoryId: entertainment.id, date: monthsAgo(1) },
-  ];
-
-  for (const t of [...thisMonth, ...priorMonths]) {
-    await db.transaction.upsert({
-      where: { linkedAccountId_externalTxnId: { linkedAccountId: accounts[t.account], externalTxnId: t.id } },
-      update: {},
-      create: {
-        linkedAccountId: accounts[t.account],
-        externalTxnId: t.id,
-        amount: t.amount,
-        type: t.type,
-        narration: t.narration,
-        merchant: t.merchant,
-        categoryId: t.categoryId,
-        categorySource: t.categoryId ? "AUTO" : "UNCATEGORIZED",
-        transactionDate: t.date,
-      },
-    });
-  }
-
-  // ---- Budget — matches design/Budget.dc.html exactly ----
-  const periodMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-  await db.monthlyBudget.upsert({
-    where: { userId_periodMonth: { userId: user.id, periodMonth } },
-    update: { amount: 20000 },
-    create: { userId: user.id, periodMonth, amount: 20000 },
+  const monthlyBudget = await db.monthlyBudget.upsert({
+    where: { userId_year_month: { userId: user.id, year: thisMonth.year, month: thisMonth.month } },
+    update: { totalAmount: "35000.00" },
+    create: { userId: user.id, year: thisMonth.year, month: thisMonth.month, totalAmount: "35000.00" },
   });
 
-  const categoryBudgets = [
-    { category: food, amount: 6000 },
-    { category: transport, amount: 3000 },
-    { category: shopping, amount: 4000 },
-    { category: bills, amount: 5000 },
-    { category: entertainment, amount: 2000 },
-  ];
-  for (const cb of categoryBudgets) {
+  const categoryBudgetAmounts: Record<string, string> = {
+    "Food & Dining": "8000.00",
+    "Transport": "4000.00",
+    "Shopping": "6000.00",
+    "Bills & Utilities": "5000.00",
+    "Entertainment": "2500.00",
+  };
+
+  for (const [name, amount] of Object.entries(categoryBudgetAmounts)) {
+    const category = categoryByName.get(name);
+    if (!category) continue;
     await db.categoryBudget.upsert({
-      where: {
-        userId_categoryId_periodMonth: { userId: user.id, categoryId: cb.category.id, periodMonth },
-      },
-      update: { amount: cb.amount },
-      create: { userId: user.id, categoryId: cb.category.id, periodMonth, amount: cb.amount },
+      where: { monthlyBudgetId_categoryId: { monthlyBudgetId: monthlyBudget.id, categoryId: category.id } },
+      update: { amount },
+      create: { monthlyBudgetId: monthlyBudget.id, categoryId: category.id, amount },
     });
   }
+  console.log(`Created budget for ${email} with ${Object.keys(categoryBudgetAmounts).length} category budgets.`);
 
-  console.log(`Seeded demo data for ${email}: 3 linked accounts, ${thisMonth.length + priorMonths.length} transactions, 1 monthly budget + ${categoryBudgets.length} category budgets.`);
+  await db.investment.createMany({
+    data: [
+      { userId: user.id, name: "Nifty 50 Index Fund", type: InvestmentType.MUTUAL_FUND, investedAmount: "50000.00", currentValue: "58400.00" },
+      { userId: user.id, name: "HDFC Bank", type: InvestmentType.STOCK, investedAmount: "20000.00", currentValue: "18650.00" },
+      { userId: user.id, name: "SBI Fixed Deposit", type: InvestmentType.FIXED_DEPOSIT, investedAmount: "100000.00", currentValue: "106200.00" },
+    ],
+  });
+  console.log(`Created 3 demo investments.`);
+}
+
+function shiftMonthDate(monthsFromNow: number): Date {
+  const now = new Date();
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + monthsFromNow, now.getUTCDate()));
 }
 
 main()
-  .then(() => db.$disconnect())
-  .catch(async (err) => {
-    console.error(err);
+  .catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  })
+  .finally(async () => {
     await db.$disconnect();
-    process.exit(1);
   });

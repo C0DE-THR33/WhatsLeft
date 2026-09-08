@@ -1,50 +1,59 @@
-/**
- * Single source of truth for category metadata — default label, tile color,
- * and type. Mirrors Category.icon in prisma/schema.prisma (that column
- * stores one of these keys) and the CSS vars in app/globals.css
- * (--cat-<key>), so a category renders identically everywhere: the
- * categorize sheet, Home, Transactions, Budget, Analytics.
- *
- * A user-added category (Category.userId != null) still points at one of
- * these icon keys — there's no per-user custom icon in v1.
- */
+// Category.icon is a plain `string` column in Postgres — nothing in the
+// database stops a bad value getting in — but the app only ever ships
+// hand-drawn stroke-SVG icons for this closed set of six (see
+// components/transactions/CategoryTile.tsx, and CONVENTIONS.md #4: "needs
+// a runtime narrowing function at the read boundary, not a cast").
 
-export type CategoryIcon =
-  | "food"
-  | "transport"
-  | "shopping"
-  | "bills"
-  | "entertainment"
-  | "income";
+export const CATEGORY_ICONS = [
+  "food",
+  "transport",
+  "shopping",
+  "bills",
+  "entertainment",
+  "other",
+] as const;
 
-export const DEFAULT_CATEGORIES: Record<
-  CategoryIcon,
-  { label: string; type: "EXPENSE" | "INCOME" }
-> = {
-  food: { label: "Food", type: "EXPENSE" },
-  transport: { label: "Transport", type: "EXPENSE" },
-  shopping: { label: "Shopping", type: "EXPENSE" },
-  bills: { label: "Bills", type: "EXPENSE" },
-  entertainment: { label: "Entertainment", type: "EXPENSE" },
-  income: { label: "Income", type: "INCOME" },
-};
+export type CategoryIcon = (typeof CATEGORY_ICONS)[number];
 
-/** Tailwind class for a category's tile background, via the --cat-* vars. */
-export function categoryColorClass(icon: CategoryIcon): string {
-  return `bg-cat-${icon}`;
-}
-
-const KNOWN_ICONS = new Set<string>(Object.keys(DEFAULT_CATEGORIES));
+const CATEGORY_ICON_SET: ReadonlySet<string> = new Set(CATEGORY_ICONS);
 
 /**
- * Prisma types Category.icon as plain `string` (it's not a DB enum — see
- * the model's comment in prisma/schema.prisma), so anything read from the
- * database needs narrowing before it can be handed to <CategoryTile>. Logs
- * once per unexpected value and falls back to "shopping" rather than
- * crashing the page render over one bad row.
+ * Narrows an untrusted `string` (fresh out of the database) to a
+ * CategoryIcon. Never throws — an unexpected value is logged and mapped to
+ * "other" so one bad row can't crash a whole page render.
  */
-export function asCategoryIcon(icon: string): CategoryIcon {
-  if (KNOWN_ICONS.has(icon)) return icon as CategoryIcon;
-  console.warn(`Unknown category icon "${icon}" — falling back to "shopping"`);
-  return "shopping";
+export function asCategoryIcon(value: string): CategoryIcon {
+  if (CATEGORY_ICON_SET.has(value)) {
+    return value as CategoryIcon;
+  }
+
+  console.error(`Unexpected category icon "${value}", falling back to "other"`);
+  return "other";
 }
+
+// Every color a category tile can use is one of these CSS custom-property
+// names, mapped to real Tailwind utilities (bg-cat-food, etc.) in
+// globals.css — see CONVENTIONS.md #3. Kept in sync with :root by hand.
+export const CATEGORY_COLORS = [
+  "cat-food",
+  "cat-transport",
+  "cat-shopping",
+  "cat-bills",
+  "cat-entertainment",
+  "cat-other",
+] as const;
+
+export type CategoryColor = (typeof CATEGORY_COLORS)[number];
+
+const CATEGORY_COLOR_SET: ReadonlySet<string> = new Set(CATEGORY_COLORS);
+
+export function asCategoryColor(value: string): CategoryColor {
+  if (CATEGORY_COLOR_SET.has(value)) {
+    return value as CategoryColor;
+  }
+
+  console.error(`Unexpected category color "${value}", falling back to "cat-other"`);
+  return "cat-other";
+}
+
+export const UNCATEGORIZED_LABEL = "Uncategorized";

@@ -1,21 +1,22 @@
 import { redirect } from "next/navigation";
-import { createClient, SupabaseNotConfiguredError } from "@/lib/supabase/server";
+import { getCurrentUserId } from "@/lib/auth";
+import { SupabaseNotConfiguredError } from "@/lib/supabase/server";
+import { NotConfigured } from "@/components/NotConfigured";
 
+// Root route: just a traffic director. Signed in → /home. Not signed in →
+// /login. src/proxy.ts already guards every other route, but this one is
+// public, so it has to check for itself.
 export default async function RootPage() {
-  let target = "/onboarding";
+  let userId: string | null;
 
   try {
-    const supabase = await createClient();
-    const { data } = await supabase.auth.getClaims();
-    target = data?.claims ? "/home" : "/onboarding";
-  } catch (err) {
-    // Same reasoning as src/lib/supabase/proxy.ts's guard: don't crash when
-    // Supabase isn't configured yet — just send everyone to the public
-    // onboarding screen instead of guessing at auth state.
-    if (!(err instanceof SupabaseNotConfiguredError)) throw err;
+    userId = await getCurrentUserId();
+  } catch (error) {
+    if (error instanceof SupabaseNotConfiguredError) {
+      return <NotConfigured />;
+    }
+    throw error;
   }
 
-  // redirect() throws internally by design (to interrupt rendering) — kept
-  // outside the try block so that throw is never mistaken for a caught error.
-  redirect(target);
+  redirect(userId ? "/home" : "/login");
 }

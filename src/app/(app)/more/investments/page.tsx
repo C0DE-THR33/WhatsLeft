@@ -1,51 +1,53 @@
-import Link from "next/link";
+import { getCurrentUser } from "@/lib/auth";
+import { getInvestmentsData } from "@/lib/queries";
+import { formatCurrency } from "@/lib/utils";
 
-// Full mockup: design/Investments.dc.html — Phase 2, not built yet.
-export default function InvestmentsPage() {
+export default async function InvestmentsPage() {
+  const user = await getCurrentUser();
+  if (!user) return null;
+
+  const data = await getInvestmentsData(user.id);
+
   return (
-    <main className="flex flex-col gap-4.5 p-5">
-      <div className="flex items-center gap-3">
-        <Link href="/more" aria-label="Back">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-            <path
-              d="M15 5l-7 7 7 7"
-              stroke="var(--foreground)"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          </svg>
-        </Link>
-        <span className="text-[17px] font-extrabold">Investments</span>
-        <span className="rounded-full bg-warn-soft px-2.5 py-0.5 text-[11px] font-bold text-warn-fg">
-          Soon
-        </span>
-      </div>
+    <div className="mx-auto max-w-md px-4 pt-6">
+      <h1 className="mb-6 text-xl font-semibold text-fg">Investments</h1>
 
-      <div className="flex flex-1 flex-col items-center justify-center gap-5.5 px-3.5 py-10 text-center">
-        <div className="flex h-[88px] w-[88px] items-center justify-center rounded-3xl border border-border bg-surface">
-          <svg width="38" height="38" viewBox="0 0 24 24" fill="none">
-            <path
-              d="M4 18l6-7 4 4 6-9"
-              stroke="var(--faint)"
-              strokeWidth="1.9"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-            <path d="M15 6h5v5" stroke="var(--faint)" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
+      <section className="mb-6 rounded-2xl border border-border bg-surface p-5">
+        <p className="text-xs font-medium uppercase tracking-wide text-fg-muted">Current value</p>
+        <p className="mt-1 text-2xl font-semibold text-fg">{formatCurrency(data.totalCurrent)}</p>
+        <p className={`mt-1 text-sm ${data.totalGain >= 0 ? "text-success" : "text-danger"}`}>
+          {data.totalGain >= 0 ? "+" : ""}
+          {formatCurrency(data.totalGain)} overall
+        </p>
+      </section>
+
+      {data.investments.length === 0 ? (
+        <p className="rounded-2xl border border-dashed border-border p-6 text-center text-sm text-fg-muted">
+          No investments added yet. This is a manually-maintained ledger — there&apos;s no live
+          brokerage sync in v1.
+        </p>
+      ) : (
+        <div className="overflow-hidden rounded-2xl border border-border bg-surface">
+          {data.investments.map((inv, i) => {
+            const gain = inv.currentValue - inv.investedAmount;
+            return (
+              <div key={inv.id} className={`flex items-center justify-between px-4 py-3.5 ${i > 0 ? "border-t border-border" : ""}`}>
+                <div>
+                  <p className="text-sm font-medium text-fg">{inv.name}</p>
+                  <p className="text-xs text-fg-muted">{inv.type.replace("_", " ").toLowerCase()}</p>
+                </div>
+                <div className="text-right">
+                  <p className="text-sm font-medium text-fg">{formatCurrency(inv.currentValue)}</p>
+                  <p className={`text-xs ${gain >= 0 ? "text-success" : "text-danger"}`}>
+                    {gain >= 0 ? "+" : ""}
+                    {formatCurrency(gain)}
+                  </p>
+                </div>
+              </div>
+            );
+          })}
         </div>
-        <div className="flex flex-col gap-2.5">
-          <span className="text-lg font-extrabold">See your full net worth</span>
-          <p className="mx-auto max-w-[280px] text-[13.5px] leading-[1.6] text-muted">
-            Track mutual funds, stocks, and deposits alongside your spending — pulled
-            automatically via Account Aggregator, or added by hand.
-          </p>
-        </div>
-        <div className="rounded-2xl border border-border bg-surface px-8 py-3.5 text-[14.5px] font-bold text-faint">
-          + Add investment
-        </div>
-      </div>
-    </main>
+      )}
+    </div>
   );
 }

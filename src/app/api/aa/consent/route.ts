@@ -1,42 +1,26 @@
-import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { getCurrentUserId } from "@/lib/auth";
-import { createConsent } from "@/lib/setu";
+import { NextResponse } from "next/server";
+import { getCurrentUserIdOrResponse } from "@/lib/auth";
+import { createConsentRequest, SetuNotConfiguredError } from "@/lib/setu";
 
-/**
- * Step 1 of the Bank Connect flow (design/BankConnect.dc.html): create a
- * consent request with Setu and hand the client back a redirect URL to
- * Setu's hosted consent screen.
- */
-export async function POST(req: NextRequest) {
-  const userId = await getCurrentUserId();
-  const { fipId } = (await req.json()) as { fipId: string };
+// Starts a Setu AA consent request for the signed-in user and hands back
+// the redirect URL the browser should follow to complete it in the FIP's
+// UI. POST-only: this has a side effect (creating a consent record with
+// Setu), so it isn't a plain page load.
+export async function POST(request: Request) {
+  const auth = await getCurrentUserIdOrResponse();
+  if ("response" in auth) return auth.response;
+  const { userId } = auth;
 
-  const now = new Date();
-  const oneYearAgo = new Date(now);
-  oneYearAgo.setFullYear(now.getFullYear() - 1);
+  const origin = new URL(request.url).origin;
 
-  // TODO: look up the user's mobile number (needed by Setu's consent
-  // request) once auth is wired up.
-  const result = await createConsent({
-    customerMobile: "",
-    purposeText: "Track transactions and spending in SpendWise",
-    fiTypes: ["DEPOSIT"],
-    dataRangeFrom: oneYearAgo,
-    dataRangeTo: now,
-  });
-
-  await db.consent.create({
-    data: {
-      userId,
-      setuConsentId: result.id,
-      status: "PENDING",
-      fiTypes: ["DEPOSIT"],
-      purposeText: "Track transactions and spending in SpendWise",
-      dataRangeFrom: oneYearAgo,
-      dataRangeTo: now,
-    },
-  });
-
-  return NextResponse.json({ redirectUrl: result.redirectUrl, fipId });
+  try {
+    const consent = await createConsentRequest(userId, `${origin}/connect-bank`);
+    return NextResponse.json(consent);
+  } catch (error) {
+    if (error instanceof SetuNotConfiguredError) {
+      return NextResponse.json({ error: error.message }, { status: 503 });
+    }
+    console.error("Setu consent request failed", error);
+    return NextResponse.json({ error: "Could not start bank connection" }, { status: 502 });
+  }
 }

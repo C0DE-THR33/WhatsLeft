@@ -1,165 +1,99 @@
 # SpendWise
 
-A personal money manager that reads bank transactions automatically via
-India's RBI Account Aggregator (AA) framework, instead of manual entry —
-built as a product-management + engineering portfolio project.
+See where your money goes, without the spreadsheet. A Next.js full-stack
+app for tracking spending, budgets, and (eventually) investments — bank
+data comes in automatically via India's Account Aggregator network, so
+there's no manual entry for day-to-day transactions.
 
-- **v1 (this repo):** AA-linked transaction import, budgets, analytics,
-  categorization.
-- **Phase 2 (scoped, not built):** Bill Scanner (OCR + AI line-item
-  categorization), Investments (manual entry, later AA mutual-fund data).
-
-Read [`CONVENTIONS.md`](./CONVENTIONS.md) before writing code here — it's
-the patterns, pitfalls, and specific version-pin reasoning this codebase
-runs on, distilled from actually building it once already.
+Read [CONVENTIONS.md](./CONVENTIONS.md) before making changes — it's the
+project's actual design decisions and the reasoning behind them, not just
+a style guide.
 
 ## Stack
 
-| Layer | Choice |
+Next.js 16 (App Router) · TypeScript · Tailwind CSS v4 · PostgreSQL via
+Supabase · Prisma (classic CLI, 6.x) · Supabase Auth (magic link) · Setu
+Account Aggregator (sandbox) · Claude API for categorization · PostHog
+
+See CONVENTIONS.md §1 for exactly why each version is pinned where it is —
+worth reading before bumping any of them.
+
+## Getting started
+
+1. **Create a Supabase project.** [supabase.com](https://supabase.com) →
+   New project.
+2. **Copy the env template and fill it in:**
+   ```bash
+   cp .env.example .env
+   ```
+   Every variable in `.env.example` has a comment saying exactly where to
+   get it — Supabase keys and both database URLs come from your project's
+   **Connect** panel (**ORMs → Prisma** tab for the database URLs). Setu
+   and Claude API keys are optional for exploring the UI — pages that need
+   them degrade gracefully (a disabled button, a clear message) rather
+   than crashing when they're unset.
+3. **Install dependencies:**
+   ```bash
+   npm install
+   ```
+4. **Push the schema and generate the Prisma client:**
+   ```bash
+   npx prisma migrate dev --name init
+   ```
+5. **Seed the default categories** (safe to run anytime, any environment):
+   ```bash
+   npm run db:seed
+   ```
+6. **Run the app:**
+   ```bash
+   npm run dev
+   ```
+7. Sign in with a magic link at `/login`, then optionally seed rich demo
+   data for that account (requires signing in once first):
+   ```bash
+   npm run db:seed:demo -- you@example.com
+   ```
+
+## Scripts
+
+| Command | What it does |
 |---|---|
-| Frontend | Next.js (App Router) + TypeScript, Tailwind CSS |
-| Backend | Next.js API routes |
-| Database | PostgreSQL via Supabase, accessed through Prisma |
-| Auth | Supabase Auth |
-| Bank data | Setu's Account Aggregator sandbox (`src/lib/setu.ts`) |
-| Categorization | Claude API (Anthropic), rules first, LLM for ambiguous cases |
-| Analytics | PostHog |
+| `npm run dev` | Start the dev server |
+| `npm run build` | Production build |
+| `npm run lint` | ESLint |
+| `npm run db:generate` | Regenerate the Prisma client after a schema change |
+| `npm run db:migrate` | Create/apply a migration (`prisma migrate dev`) |
+| `npm run db:seed` | Seed shipped defaults (categories) |
+| `npm run db:seed:demo -- <email>` | Seed rich demo data for one existing user |
+| `npm run dev:signin -- <email>` | Mint a sign-in link without sending email (dev only) |
 
-See [`design/`](./design) for the UI concept this is built from — a
-multi-screen canvas covering the full v1 flow plus the two Phase 2
-placeholder screens.
+### Signing in locally
 
-## Repository structure
+Supabase's built-in email service is rate-limited to roughly **2 messages
+per hour, project-wide** — it exists for testing, not real use — so the
+normal magic-link flow stalls quickly in development, and it can't work
+at all for a demo address that isn't a real mailbox. For local work, mint
+a link directly instead:
 
-```
-src/
-  proxy.ts                             refreshes the session + redirects signed-out
-                                        users to /login (Next 16 renamed middleware.ts)
-  app/
-    onboarding/, connect-bank/        public / auth-gated top-level screens, no bottom nav
-    login/                            magic-link sign-in (no dedicated screen in design/)
-    auth/callback/                    magic-link callback: exchanges code, upserts User
-    (app)/                            route group sharing the bottom-nav shell
-      layout.tsx                      renders <BottomNav/> + the active tab
-      home/, transactions/, budget/, analytics/
-      more/                           nav hub
-        bill-scanner/, investments/, settings/
-    api/
-      aa/consent/                     POST — start a Setu consent request
-      aa/webhook/                     POST — Setu's consent + FI-data notifications
-      aa/sync/                        POST — pull FI data for an active consent
-      transactions/[id]/categorize/   PATCH — confirm/override a category
-      categories/                     GET — default + user categories
-  components/
-    auth/SignOutButton.tsx            client-side sign-out, used on Settings
-    nav/BottomNav.tsx                 shared tab bar
-    transactions/CategoryTile.tsx     the icon-tile system used everywhere
-    transactions/CategorizeSheet.tsx  the categorize bottom sheet
-    transactions/TransactionsList.tsx client half of Transactions (filter + categorize)
-  lib/
-    db.ts                             Prisma client singleton
-    queries.ts                        every real Prisma query, one per page's needs
-    setu.ts                           Setu AA API wrapper
-    auth.ts                           current-user lookup, backed by Supabase Auth
-    categories.ts                     category metadata, single source of truth
-    dates.ts, donut.ts                pure helpers (month/day math, donut segment math)
-    supabase/client.ts, server.ts, proxy.ts   Supabase SSR client factories
-prisma/
-  schema.prisma                       full data model + design rationale in comments
-design/
-  *.dc.html, canvas.json              the UI concept canvas
+```bash
+npm run dev:signin -- you@example.com
 ```
 
-## What's real vs. stubbed right now
+Paste the printed URL into whichever browser you want signed in. It's
+single-use and expires, so run it again for a fresh one. Requires
+`SUPABASE_SECRET_KEY` in `.env`.
 
-This is a repository **structure**, not a finished app. Concretely:
+Before anyone other than you signs in, configure custom SMTP under
+**Authentication → SMTP Settings** in the Supabase dashboard — that
+removes the cap and makes the real magic-link flow usable.
 
-- `lib/db.ts`, `lib/categories.ts`, `components/*`, the `categorize` and
-  `categories` API routes, and the Prisma schema are fully implemented.
-- **Auth is wired up end to end**: `src/proxy.ts` protects every route
-  except `/`, `/onboarding`, `/login`, and `/auth/*`, redirecting signed-out
-  visitors to `/login?redirect=<path>`; `/login` sends a Supabase magic
-  link; `/auth/callback` exchanges it for a session and creates the
-  matching `User` row (see that model's comment in `prisma/schema.prisma`
-  for why that row can't just be `auth.users`). If
-  `NEXT_PUBLIC_SUPABASE_URL`/`NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` aren't
-  set, `src/proxy.ts` logs a warning and skips enforcement entirely (every
-  route is open) rather than crashing — intentional, so the app is still
-  browsable before a Supabase project exists. But the `(app)/*` pages
-  themselves now call Supabase directly too (to read the session for real
-  queries — see below), so `src/app/(app)/error.tsx` is what actually
-  keeps *those* pages from 500ing pre-setup: it catches
-  `SupabaseNotConfiguredError` and shows a plain "connect Supabase" message
-  instead of a crash. `/`, `/onboarding`, `/login`, `/connect-bank` don't
-  depend on that boundary — they handle the unconfigured case inline.
-- **Every `(app)/*` page reads real data through `lib/queries.ts`** —
-  no hardcoded sample arrays left. Home/Budget/Analytics all key off the
-  current calendar month; Transactions fetches the latest 100 rows and
-  the categorize sheet PATCHes the real API route (which now also checks
-  the transaction belongs to the caller — it didn't before). Spend that
-  has no category is tracked as its own "Uncategorized" slice rather than
-  silently dropped, so category percentages always add up to 100%.
-  `LinkedAccount.currentBalance` was added to the schema — the design's
-  "Total balance" card had nothing to sum without it. New users see real
-  empty states (no accounts/budget/transactions), not zeros dressed up as
-  data.
-  **Caveat**: none of this has run against a live database — no Supabase
-  project existed to test against. Every query passed TypeScript against
-  Prisma's generated types (which does catch wrong field/relation/enum
-  names), and the trickier pure logic (month-boundary rollover for the
-  6-month trend, category percentage math, date-bucketing) was verified
-  with standalone scripts — but the actual SQL Prisma generates has not
-  been executed. Worth a careful pass once `DATABASE_URL` points at a
-  real database, especially `getAnalyticsData`'s trend/highest-category
-  math.
-- `lib/setu.ts` and the `aa/*` routes follow the *shape* Setu's docs
-  describe, but the exact request/response field names haven't been
-  verified against a live sandbox call yet — there were no sandbox
-  credentials available when this was written. Check
-  [Setu's Postman collection](https://documenter.getpostman.com/view/16080598/TzzBoun5)
-  against each `TODO` in `lib/setu.ts` before relying on it.
+## Verification
 
-## Local setup
+Before committing, at minimum:
 
-1. **Create a Supabase project**: [supabase.com](https://supabase.com) → sign
-   in → New project → pick an org, name it (e.g. `spendwise`), set a
-   database password (save it — you'll need it below), pick a region,
-   create. Takes ~2 minutes to provision.
-2. `cp .env.example .env` and fill in:
-   - `DATABASE_URL` / `DIRECT_URL` — the project's **Connect** button (top
-     of the dashboard) → **ORMs** tab → **Prisma**. It gives you both
-     strings pre-filled except the password (the one you set in step 1).
-   - `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` —
-     Project Settings → API Keys. Use the new **publishable** key, not the
-     legacy `anon` JWT key (Supabase is deprecating `anon`/`service_role`
-     by end of 2026).
-   - `SETU_*` — sign up at [bridge.setu.co](https://bridge.setu.co/v2),
-     create an Account Aggregator (Data) app, sandbox mode.
-   - `ANTHROPIC_API_KEY`, `NEXT_PUBLIC_POSTHOG_KEY` — optional until
-     categorization/analytics are wired up.
-3. Authentication → URL Configuration → add `http://localhost:3000/auth/callback`
-   as a redirect URL (required for the magic-link sign-in to come back to
-   this app instead of erroring).
-4. `npm install`
-5. `npx prisma migrate dev --name init` — creates the tables in Supabase
-   and generates the Prisma client.
-6. `npm run db:seed` — seeds the default categories (Food, Transport,
-   Shopping, Bills, Entertainment, Income). This part is safe to run
-   against any environment; nothing else is seeded by it, so a fresh
-   sign-in genuinely has no linked accounts/transactions/budget, which
-   every page now renders a real empty state for.
-7. `npm run dev`, sign in at `/login` with any email you can receive mail
-   at — Supabase's magic link is real even against sandbox data.
-8. `npm run db:seed:demo -- you@example.com` (the same email you just
-   signed in with) — attaches 3 linked accounts, ~20 transactions across
-   6 months, and a monthly + per-category budget to *that* user. Every
-   number matches `design/*.dc.html` (see `prisma/seed-demo.ts`'s
-   comment), so the running app should look like the design canvas.
-   Needs step 7 done first — it looks up the user by email, and that
-   User row only exists after a real sign-in (see `auth/callback/route.ts`).
+```bash
+npm run build && npm run lint
+```
 
-Note: `prisma`/`@prisma/client` are pinned to `6.19.3`. Prisma 7 replaced
-the classic CLI (`generate`, `migrate dev`) with a different, platform-hosted
-workflow (`deploy`, `branch`, `contract`, ...) built around Prisma's own
-hosted Postgres — not what this project's self-hosted Supabase + migrations
-setup is built around, so don't bump past 6.x without re-checking that.
+A passing build is necessary but not sufficient — see CONVENTIONS.md §8
+before assuming a page actually works from that alone.

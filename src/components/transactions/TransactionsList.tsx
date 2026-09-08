@@ -1,165 +1,106 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
-import { CategoryTile, DashedTile } from "@/components/transactions/CategoryTile";
-import { CategorizeSheet } from "@/components/transactions/CategorizeSheet";
-import { recencyBucket, type RecencyBucket } from "@/lib/dates";
-import type { CategoryIcon } from "@/lib/categories";
-import type { CategoryOption, TransactionRow } from "@/lib/queries";
+import { formatCurrency } from "@/lib/utils";
+import { formatShortDate } from "@/lib/dates";
+import { asCategoryIcon, asCategoryColor } from "@/lib/categories";
+import { CategoryTile, DashedTile } from "./CategoryTile";
+import { CategorizeSheet, type CategoryOption } from "./CategorizeSheet";
 
-const FILTERS: { label: string; icon: CategoryIcon | "all" }[] = [
-  { label: "All", icon: "all" },
-  { label: "Food", icon: "food" },
-  { label: "Transport", icon: "transport" },
-  { label: "Shopping", icon: "shopping" },
-  { label: "Bills", icon: "bills" },
-];
+// Server Components fetch, Client Components only hold interaction state
+// (CONVENTIONS.md #4): this component receives already-fetched, already-
+// toNum()'d rows as props and owns only "which transaction's sheet is
+// open" and "which category filter is active."
 
-const BUCKET_ORDER: RecencyBucket[] = ["Today", "Yesterday", "This week", "Earlier"];
-
-interface TransactionsListProps {
-  initialTransactions: TransactionRow[];
-  categories: CategoryOption[];
+export interface TransactionRow {
+  id: string;
+  amount: number;
+  direction: "DEBIT" | "CREDIT";
+  description: string;
+  merchantName: string | null;
+  transactionDate: Date;
+  category: { id: string; name: string; icon: string; color: string } | null;
 }
 
-export function TransactionsList({ initialTransactions, categories }: TransactionsListProps) {
-  const router = useRouter();
-  const [txns, setTxns] = useState(initialTransactions);
-  const [filter, setFilter] = useState<(typeof FILTERS)[number]["icon"]>("all");
-  const [editing, setEditing] = useState<TransactionRow | null>(null);
-  const [saving, setSaving] = useState(false);
+export function TransactionsList({
+  transactions,
+  categories,
+}: {
+  transactions: TransactionRow[];
+  categories: CategoryOption[];
+}) {
+  const [activeTransaction, setActiveTransaction] = useState<TransactionRow | null>(null);
+  const [overrides, setOverrides] = useState<Record<string, CategoryOption | null>>({});
 
-  const filtered = useMemo(
-    () => (filter === "all" ? txns : txns.filter((t) => t.icon === filter)),
-    [txns, filter]
-  );
+  const grouped = useMemo(() => groupByDay(transactions), [transactions]);
 
-  const groups = useMemo(() => {
-    const now = new Date();
-    return BUCKET_ORDER.map((bucket) => ({
-      bucket,
-      items: filtered.filter((t) => recencyBucket(new Date(t.transactionDate), now) === bucket),
-    })).filter((g) => g.items.length > 0);
-  }, [filtered]);
-
-  async function saveCategory(categoryId: string, note: string) {
-    if (!editing) return;
-    setSaving(true);
-    try {
-      const res = await fetch(`/api/transactions/${editing.id}/categorize`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ categoryId, note }),
-      });
-      if (!res.ok) throw new Error(await res.text());
-
-      const category = categories.find((c) => c.id === categoryId);
-      setTxns((prev) =>
-        prev.map((t) =>
-          t.id === editing.id
-            ? { ...t, categoryId, categoryLabel: category?.label ?? null, icon: category?.icon ?? null }
-            : t
-        )
-      );
-      setEditing(null);
-      router.refresh(); // keep the server-fetched data in sync for the next navigation
-    } catch {
-      // TODO: surface a real error toast — for now the sheet just stays
-      // open with its Save button re-enabled so the user can retry.
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  if (txns.length === 0) {
+  if (transactions.length === 0) {
     return (
-      <main className="flex flex-col gap-4 p-5">
-        <span className="text-[19px] font-extrabold">Transactions</span>
-        <div className="mt-8 rounded-[18px] border border-dashed border-border bg-surface p-6 text-center">
-          <p className="text-[13px] text-muted">
-            No transactions yet. Once your bank is connected, they&apos;ll show up here
-            automatically.
-          </p>
-        </div>
-      </main>
+      <div className="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-border py-16 text-center">
+        <p className="text-sm font-medium text-fg">No transactions yet</p>
+        <p className="max-w-xs text-sm text-fg-muted">
+          Connect a bank account to start seeing your spending here automatically.
+        </p>
+      </div>
     );
   }
 
   return (
-    <main className="flex flex-col gap-4 p-5">
-      <div className="flex items-center justify-between">
-        <span className="text-[19px] font-extrabold">Transactions</span>
-        <svg width="19" height="19" viewBox="0 0 24 24" fill="none">
-          <circle cx="11" cy="11" r="7" stroke="var(--foreground)" strokeWidth="1.8" />
-          <path d="M20 20l-4-4" stroke="var(--foreground)" strokeWidth="1.8" strokeLinecap="round" />
-        </svg>
-      </div>
+    <div className="flex flex-col gap-6">
+      {grouped.map(([day, rows]) => (
+        <div key={day} className="flex flex-col gap-2">
+          <h3 className="px-1 text-xs font-medium uppercase tracking-wide text-fg-muted">{day}</h3>
+          <div className="overflow-hidden rounded-2xl border border-border bg-surface">
+            {rows.map((tx, i) => {
+              const override = overrides[tx.id];
+              const category = override !== undefined ? override : tx.category;
 
-      <div className="flex gap-2 overflow-x-auto">
-        {FILTERS.map((f) => (
-          <button
-            key={f.label}
-            onClick={() => setFilter(f.icon)}
-            className={`rounded-full border px-3.5 py-1.5 text-[12.5px] font-bold whitespace-nowrap ${
-              filter === f.icon
-                ? "border-foreground bg-foreground text-white"
-                : "border-border bg-surface"
-            }`}
-          >
-            {f.label}
-          </button>
-        ))}
-      </div>
-
-      {groups.map(({ bucket, items }) => (
-        <div key={bucket}>
-          <div className="mt-1.5 mb-0.5 text-[11.5px] font-bold tracking-wide text-faint uppercase">
-            {bucket}
-          </div>
-          {items.map((t) => (
-            <div key={t.id} className="flex items-center gap-3 border-b border-border py-2.5">
-              {t.icon ? (
-                <CategoryTile icon={t.icon} size="md" />
-              ) : (
-                <DashedTile glyph="?" size="md" />
-              )}
-              <div className="flex flex-1 flex-col gap-0.5">
-                <span className="text-[13.5px] font-bold">{t.merchant}</span>
-                {t.categoryLabel ? (
-                  <span className="text-[11.5px] text-muted">
-                    {t.categoryLabel} · {t.bank}
+              return (
+                <button
+                  key={tx.id}
+                  onClick={() => setActiveTransaction(tx)}
+                  className={`flex w-full items-center gap-3 px-4 py-3 text-left ${i > 0 ? "border-t border-border" : ""}`}
+                >
+                  {category ? (
+                    <CategoryTile icon={asCategoryIcon(category.icon)} color={asCategoryColor(category.color)} size="sm" />
+                  ) : (
+                    <DashedTile size="sm" label="question" />
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium text-fg">{tx.merchantName ?? tx.description}</p>
+                    <p className="truncate text-xs text-fg-muted">{category?.name ?? "Uncategorized"}</p>
+                  </div>
+                  <span className={`text-sm font-semibold ${tx.direction === "CREDIT" ? "text-success" : "text-fg"}`}>
+                    {tx.direction === "CREDIT" ? "+" : "-"}
+                    {formatCurrency(tx.amount)}
                   </span>
-                ) : (
-                  <button
-                    onClick={() => setEditing(t)}
-                    className="w-fit rounded-full bg-warn-soft px-3 py-1 text-[11.5px] font-bold text-warn-fg"
-                  >
-                    Set category ▾
-                  </button>
-                )}
-              </div>
-              <span
-                className={`text-[13.5px] font-bold ${t.type === "DEBIT" ? "text-danger-fg" : "text-success-fg"}`}
-              >
-                {t.type === "DEBIT" ? "−" : "+"}₹{t.amount.toLocaleString("en-IN")}
-              </span>
-            </div>
-          ))}
+                </button>
+              );
+            })}
+          </div>
         </div>
       ))}
 
-      {editing && (
-        <CategorizeSheet
-          merchant={editing.merchant}
-          amount={editing.amount}
-          meta={`${recencyBucket(new Date(editing.transactionDate))} · ${editing.bank}`}
-          categories={categories}
-          detectedCategoryId={editing.categoryId ?? undefined}
-          onClose={() => !saving && setEditing(null)}
-          onSave={saveCategory}
-        />
-      )}
-    </main>
+      <CategorizeSheet
+        transaction={activeTransaction}
+        categories={categories}
+        onClose={() => setActiveTransaction(null)}
+        onCategorized={(transactionId, category) => {
+          setOverrides((prev) => ({ ...prev, [transactionId]: category }));
+          setActiveTransaction(null);
+        }}
+      />
+    </div>
   );
+}
+
+function groupByDay(transactions: TransactionRow[]): [string, TransactionRow[]][] {
+  const groups = new Map<string, TransactionRow[]>();
+  for (const tx of transactions) {
+    const key = formatShortDate(tx.transactionDate);
+    const existing = groups.get(key);
+    if (existing) existing.push(tx);
+    else groups.set(key, [tx]);
+  }
+  return Array.from(groups.entries());
 }

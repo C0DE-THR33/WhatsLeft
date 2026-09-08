@@ -1,90 +1,100 @@
 "use client";
 
-import { Suspense, useState } from "react";
+import { Suspense, useState, type FormEvent } from "react";
 import { useSearchParams } from "next/navigation";
-import { createClient } from "@/lib/supabase/client";
+import { createClient, SupabaseNotConfiguredError } from "@/lib/supabase/client";
 
-function LoginForm() {
-  const searchParams = useSearchParams();
-  const redirect = searchParams.get("redirect") ?? "/home";
-  const hadError = searchParams.get("error") === "auth";
+type Status = "idle" | "sending" | "sent" | "error";
 
-  const [email, setEmail] = useState("");
-  const [status, setStatus] = useState<"idle" | "sending" | "sent" | "error">("idle");
-
-  async function sendLink(e: React.FormEvent) {
-    e.preventDefault();
-    setStatus("sending");
-    try {
-      const supabase = createClient();
-      const callbackUrl = new URL("/auth/callback", window.location.origin);
-      callbackUrl.searchParams.set("redirect", redirect);
-
-      const { error } = await supabase.auth.signInWithOtp({
-        email,
-        options: { emailRedirectTo: callbackUrl.toString() },
-      });
-      setStatus(error ? "error" : "sent");
-    } catch {
-      // createClient() throws synchronously (not a returned `error`) when
-      // Supabase isn't configured — without this catch, that exception
-      // left the button stuck on "Sending…" forever instead of showing
-      // the error state below.
-      setStatus("error");
-    }
-  }
-
-  if (status === "sent") {
-    return (
-      <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
-        <span className="text-lg font-extrabold">Check your inbox</span>
-        <p className="max-w-xs text-sm text-muted">
-          We sent a sign-in link to <b className="text-foreground">{email}</b>. Open it on
-          this device to continue.
-        </p>
-      </div>
-    );
-  }
-
+// useSearchParams() opts a client component out of static prerendering
+// unless it's wrapped in Suspense — without this, `next build` fails
+// prerendering this exact page.
+export default function LoginPage() {
   return (
-    <form onSubmit={sendLink} className="flex flex-1 flex-col justify-center gap-4">
-      <div className="flex flex-col gap-1.5">
-        <h1 className="text-2xl font-extrabold">Sign in</h1>
-        <p className="text-sm text-muted">We&apos;ll email you a link — no password needed.</p>
-      </div>
-      <input
-        type="email"
-        required
-        value={email}
-        onChange={(e) => setEmail(e.target.value)}
-        placeholder="you@example.com"
-        className="rounded-xl border border-border px-3.5 py-3.5 text-sm outline-none placeholder:text-faint"
-      />
-      <button
-        type="submit"
-        disabled={status === "sending"}
-        className="rounded-2xl bg-accent py-4 text-center text-[15px] font-bold text-white disabled:opacity-60"
-      >
-        {status === "sending" ? "Sending…" : "Send sign-in link"}
-      </button>
-      {(status === "error" || hadError) && (
-        <span className="text-center text-[13px] font-semibold text-danger-fg">
-          Something went wrong sending that link. Try again.
-        </span>
-      )}
-    </form>
+    <Suspense>
+      <LoginForm />
+    </Suspense>
   );
 }
 
-// Full mockup: no dedicated login screen in design/ — Onboarding assumed
-// auth already existed. useSearchParams() needs a Suspense boundary so
-// this page can still prerender its shell.
-export default function LoginPage() {
+function LoginForm() {
+  const searchParams = useSearchParams();
+  const redirectTo = searchParams.get("redirectTo") ?? "/home";
+
+  const [email, setEmail] = useState("");
+  const [status, setStatus] = useState<Status>("idle");
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setStatus("sending");
+    setErrorMessage(null);
+
+    try {
+      const supabase = createClient();
+      const { error } = await supabase.auth.signInWithOtp({
+        email,
+        options: {
+          emailRedirectTo: `${window.location.origin}/auth/callback?redirectTo=${encodeURIComponent(redirectTo)}`,
+        },
+      });
+
+      // The two ways this can end up stuck forever on "Sending…" if not
+      // handled explicitly: the SDK returning `error` without throwing,
+      // and createClient() throwing synchronously before the network call
+      // even starts (CONVENTIONS.md #8 — this exact bug shipped once).
+      if (error) {
+        setStatus("error");
+        setErrorMessage(error.message);
+        return;
+      }
+
+      setStatus("sent");
+    } catch (error) {
+      setStatus("error");
+      setErrorMessage(
+        error instanceof SupabaseNotConfiguredError
+          ? "SpendWise isn't configured yet — set up your .env file first."
+          : "Something went wrong. Please try again.",
+      );
+    }
+  }
+
   return (
-    <main className="flex min-h-full flex-col p-7">
-      <Suspense fallback={null}>
-        <LoginForm />
-      </Suspense>
-    </main>
+    <div className="flex min-h-screen flex-col items-center justify-center gap-6 bg-bg px-6">
+      <div className="w-full max-w-sm rounded-2xl border border-border bg-surface p-6 shadow-sm">
+        <h1 className="text-xl font-semibold text-fg">Sign in to SpendWise</h1>
+        <p className="mt-1 text-sm text-fg-muted">
+          We&apos;ll email you a magic link — no password needed.
+        </p>
+
+        {status === "sent" ? (
+          <p className="mt-6 rounded-lg bg-success/10 px-4 py-3 text-sm text-success">
+            Check your inbox for a sign-in link.
+          </p>
+        ) : (
+          <form onSubmit={handleSubmit} className="mt-6 flex flex-col gap-3">
+            <input
+              type="email"
+              required
+              placeholder="you@example.com"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              className="rounded-lg border border-border bg-bg px-3 py-2 text-sm text-fg outline-none focus:border-accent"
+            />
+            <button
+              type="submit"
+              disabled={status === "sending"}
+              className="rounded-lg bg-accent px-3 py-2 text-sm font-medium text-accent-fg disabled:opacity-60"
+            >
+              {status === "sending" ? "Sending…" : "Send magic link"}
+            </button>
+            {status === "error" && errorMessage ? (
+              <p className="text-sm text-danger">{errorMessage}</p>
+            ) : null}
+          </form>
+        )}
+      </div>
+    </div>
   );
 }

@@ -1,160 +1,122 @@
-import type { CategoryIcon } from "@/lib/categories";
 import { cn } from "@/lib/utils";
+import type { CategoryIcon, CategoryColor } from "@/lib/categories";
 
-const ICON_SVGS: Record<CategoryIcon, (size: number) => React.ReactNode> = {
-  food: (size) => (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none">
-      <path
-        d="M5 9h14l-1.4 8.4A2 2 0 0 1 15.6 19H8.4a2 2 0 0 1-2-1.6L5 9Z"
-        stroke="#fff"
-        strokeWidth="1.7"
-        strokeLinejoin="round"
-      />
-      <path d="M8 9a4 4 0 0 1 8 0" stroke="#fff" strokeWidth="1.7" strokeLinecap="round" />
+// The one way a category ever renders — a colored rounded-square tile with
+// a hand-drawn stroke-SVG icon. Never fall back to a plain colored dot or
+// a letter avatar once this exists (CONVENTIONS.md #3): consistency across
+// every screen is the entire point, which is also why the uncategorized
+// state below gets its own DashedTile rather than silently reusing this
+// one with muted colors.
+
+const SIZES = {
+  sm: { tile: "size-8", icon: 16 },
+  md: { tile: "size-10", icon: 20 },
+  lg: { tile: "size-14", icon: 24 },
+} as const;
+
+type Size = keyof typeof SIZES;
+
+// Inline stroke-SVG, one consistent grid, currentColor — never emoji, never
+// an icon font (CONVENTIONS.md #3).
+const ICONS: Record<CategoryIcon, (props: { size: number }) => React.ReactNode> = {
+  food: ({ size }) => (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M7 3v7a2 2 0 0 0 2 2v9" />
+      <path d="M11 3v9" />
+      <path d="M15 3v7a2 2 0 0 1-2 2" />
+      <path d="M18 3c-1.5 3-1.5 8 0 9v9" />
     </svg>
   ),
-  transport: (size) => (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none">
-      <path
-        d="M5 16v-4.5a1.5 1.5 0 0 1 .3-.9L7 8h10l1.7 2.6a1.5 1.5 0 0 1 .3.9V16"
-        stroke="#fff"
-        strokeWidth="1.7"
-        strokeLinejoin="round"
-      />
-      <rect x="4" y="13" width="16" height="5" rx="1.5" stroke="#fff" strokeWidth="1.7" />
-      <circle cx="8" cy="18.4" r="1.3" fill="#fff" />
-      <circle cx="16" cy="18.4" r="1.3" fill="#fff" />
+  transport: ({ size }) => (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="4" y="7" width="16" height="10" rx="2" />
+      <path d="M4 13h16" />
+      <circle cx="8" cy="19" r="1.5" />
+      <circle cx="16" cy="19" r="1.5" />
+      <path d="M6 7l1.5-3h9L18 7" />
     </svg>
   ),
-  shopping: (size) => (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none">
-      <path
-        d="M6.5 8h11l-1 11.2a1.5 1.5 0 0 1-1.5 1.3H9a1.5 1.5 0 0 1-1.5-1.3L6.5 8Z"
-        stroke="#fff"
-        strokeWidth="1.7"
-        strokeLinejoin="round"
-      />
-      <path d="M9 8a3 3 0 0 1 6 0" stroke="#fff" strokeWidth="1.7" strokeLinecap="round" />
+  shopping: ({ size }) => (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M6 8h12l-1 12H7L6 8Z" />
+      <path d="M9 8V6a3 3 0 0 1 6 0v2" />
     </svg>
   ),
-  bills: (size) => (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none">
-      <path
-        d="M7 3.5h10v17l-2-1.3-1.7 1.3-1.8-1.3-1.8 1.3L7 19V3.5Z"
-        stroke="#fff"
-        strokeWidth="1.5"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M9.3 8h5.4M9.3 11.5h5.4M9.3 15h3.3"
-        stroke="#fff"
-        strokeWidth="1.4"
-        strokeLinecap="round"
-      />
+  bills: ({ size }) => (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="4" y="4" width="16" height="16" rx="2" />
+      <path d="M8 9h8M8 13h8M8 17h4" />
     </svg>
   ),
-  entertainment: (size) => (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none">
-      <circle cx="12" cy="12" r="7.6" stroke="#fff" strokeWidth="1.6" />
-      <path d="M10.2 9.3v5.4l4.6-2.7-4.6-2.7Z" fill="#fff" />
+  entertainment: ({ size }) => (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="6" width="18" height="12" rx="2" />
+      <path d="M9 9l5 3-5 3V9Z" />
     </svg>
   ),
-  income: (size) => (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none">
-      <path
-        d="M12 4v10.5M7.5 11l4.5 4.5L16.5 11"
-        stroke="#fff"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path d="M5 19h14" stroke="#fff" strokeWidth="1.8" strokeLinecap="round" />
+  other: ({ size }) => (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="5" cy="12" r="1.25" />
+      <circle cx="12" cy="12" r="1.25" />
+      <circle cx="19" cy="12" r="1.25" />
     </svg>
   ),
 };
 
-const SIZE_CLASSES = {
-  sm: "h-5 w-5 rounded-[6px]",
-  md: "h-9 w-9 rounded-[11px]",
-  lg: "aspect-square w-full rounded-[18px]",
-} as const;
-
-const ICON_PX = { sm: 11, md: 18, lg: 27 } as const;
-
-interface CategoryTileProps {
+export interface CategoryTileProps {
   icon: CategoryIcon;
-  size?: keyof typeof SIZE_CLASSES;
-  /** Ring + checkmark badge, used for the auto-detected pick in the categorize sheet. */
+  color: CategoryColor;
+  size?: Size;
   selected?: boolean;
-  className?: string;
 }
 
-/** The colored icon tile used for every category, everywhere in the app. */
-export function CategoryTile({ icon, size = "md", selected, className }: CategoryTileProps) {
+export function CategoryTile({ icon, color, size = "md", selected = false }: CategoryTileProps) {
+  const { tile, icon: iconSize } = SIZES[size];
+  const Icon = ICONS[icon];
+
   return (
-    <div className={cn("relative flex-shrink-0", selected && "overflow-visible")}>
+    <div className="relative inline-flex">
       <div
-        className={cn("flex items-center justify-center", SIZE_CLASSES[size], className)}
-        style={{
-          background: `var(--cat-${icon})`,
-          boxShadow: selected
-            ? "0 0 0 2px var(--surface), 0 0 0 4.5px var(--accent)"
-            : undefined,
-        }}
+        className={cn(
+          tile,
+          "flex items-center justify-center rounded-xl",
+          selected && "ring-2 ring-accent ring-offset-2 ring-offset-bg",
+        )}
+        style={{ backgroundColor: `var(--color-${color})`, color: "white" }}
       >
-        {ICON_SVGS[icon](ICON_PX[size])}
+        <Icon size={iconSize} />
       </div>
-      {selected && (
-        <div className="absolute -top-1 -right-1 flex h-[18px] w-[18px] items-center justify-center rounded-full border-2 border-surface bg-accent">
-          <svg width="9" height="9" viewBox="0 0 24 24" fill="none">
-            <path
-              d="M4 12l5 5L20 6"
-              stroke="#fff"
-              strokeWidth="3"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
+      {selected ? (
+        <span className="absolute -right-1 -top-1 flex size-4 items-center justify-center rounded-full bg-accent text-accent-fg">
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M20 6 9 17l-5-5" />
           </svg>
-        </div>
-      )}
+        </span>
+      ) : null}
     </div>
   );
 }
 
-const DASHED_SIZE_CLASSES = {
-  sm: "h-5 w-5 rounded-[6px]",
-  md: "h-9 w-9 rounded-[11px]",
-  lg: "aspect-square w-full rounded-[18px]",
-} as const;
+// "Uncategorized" and "add category" — the only two things that ever
+// render as a dashed tile instead of a solid one.
+export function DashedTile({ size = "md", label }: { size?: Size; label?: "plus" | "question" }) {
+  const { tile, icon: iconSize } = SIZES[size];
 
-/**
- * The dashed tile: "?" for an uncategorized transaction, "+" for "add a
- * category". Shares the tile grammar without pretending to a real category.
- */
-export function DashedTile({
-  glyph,
-  size = "md",
-  className,
-}: {
-  glyph: "?" | "+";
-  size?: keyof typeof DASHED_SIZE_CLASSES;
-  className?: string;
-}) {
   return (
     <div
       className={cn(
-        "flex items-center justify-center border-[1.5px] border-dashed border-border bg-surface text-faint",
-        DASHED_SIZE_CLASSES[size],
-        className
+        tile,
+        "flex items-center justify-center rounded-xl border-2 border-dashed border-border text-fg-muted",
       )}
     >
-      {glyph === "?" ? (
-        <span className="font-extrabold" style={{ fontSize: ICON_PX[size] - 2 }}>
-          ?
-        </span>
+      {label === "plus" ? (
+        <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M12 5v14M5 12h14" />
+        </svg>
       ) : (
-        <svg width={ICON_PX[size]} height={ICON_PX[size]} viewBox="0 0 24 24" fill="none">
-          <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+        <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M9.5 9a2.5 2.5 0 0 1 5 0c0 1.5-2.5 2-2.5 3.5" />
+          <path d="M12 17h.01" />
         </svg>
       )}
     </div>

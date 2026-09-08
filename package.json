@@ -7,33 +7,31 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "postinstall": "prisma generate",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
     "db:seed": "tsx prisma/seed.ts",
-    "db:seed:demo": "tsx prisma/seed-demo.ts"
-  },
-  "prisma": {
-    "seed": "tsx prisma/seed.ts"
+    "db:seed:demo": "tsx prisma/seed-demo.ts",
+    "dev:signin": "tsx scripts/dev-signin.ts"
   },
   "dependencies": {
-    "@prisma/client": "^6.19.3",
-    "@supabase/ssr": "^0.12.6",
-    "@supabase/supabase-js": "^2.116.0",
-    "clsx": "^2.1.1",
+    "@prisma/client": "6.19.3",
+    "@supabase/ssr": "0.12.6",
+    "@supabase/supabase-js": "2.116.0",
     "next": "16.3.4",
+    "posthog-js": "1.428.4",
     "react": "19.2.8",
-    "react-dom": "19.2.8",
-    "tailwind-merge": "^3.6.0"
+    "react-dom": "19.2.8"
   },
   "devDependencies": {
-    "@tailwindcss/postcss": "^4",
-    "@types/node": "^20",
+    "@tailwindcss/postcss": "4.3.3",
+    "@types/node": "^24",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "eslint": "^9",
+    "eslint": "9.39.5",
     "eslint-config-next": "16.3.4",
-    "prisma": "^6.19.3",
-    "tailwindcss": "^4",
-    "tsx": "^4.23.13",
-    "typescript": "^5"
+    "prisma": "6.19.3",
+    "tailwindcss": "4.3.3",
+    "tsx": "^4",
+    "typescript": "5.9.3"
   }
 }

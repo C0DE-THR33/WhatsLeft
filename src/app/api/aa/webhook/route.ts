@@ -1,37 +1,57 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
+import { verifyWebhookSignature } from "@/lib/setu";
+import { ConsentStatus } from "@prisma/client";
 
-/**
- * Setu POSTs both consent-status and FI-data-session notifications to this
- * one endpoint (configured as the AA product's notification URL on
- * bridge.setu.co). We store the raw payload first, unconditionally — that's
- * what makes this idempotent and debuggable (see the WebhookEvent model's
- * schema comment) — and only interpret it after it's safely persisted.
- *
- * TODO: verify the actual discriminator field(s) Setu sends against a real
- * sandbox payload — docs.setu.co describes the two notification shapes in
- * prose, but this hasn't been checked against a live delivery yet. Once
- * confirmed, add the actual processing step here (update Consent /
- * LinkedAccount / Transaction rows from the event).
- */
-export async function POST(req: NextRequest) {
-  const payload = await req.json();
+// Called by Setu's servers, not a signed-in browser — this is the one
+// route on the public allowlist in src/proxy.ts. Trust nothing here
+// without the signature check: this endpoint has no session cookie to
+// fall back on.
+export async function POST(request: Request) {
+  const rawBody = await request.text();
+  const signature = request.headers.get("x-setu-signature") ?? "";
 
-  const isFiNotification = "sessionId" in payload || "session" in payload;
-  const eventType = isFiNotification ? "FI_NOTIFICATION" : "CONSENT_STATUS";
-  const setuReferenceId: string | undefined =
-    payload.sessionId ?? payload.consentId ?? payload.id;
-
-  if (!setuReferenceId) {
-    // Can't dedupe or route a payload with no reference id — log it and
-    // still 200, so Setu doesn't treat this as a failed delivery and retry.
-    console.error("AA webhook payload had no recognizable reference id", payload);
-    return NextResponse.json({ ok: true });
+  if (!verifyWebhookSignature(rawBody, signature)) {
+    return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
   }
 
-  await db.webhookEvent.create({
-    data: { eventType, setuReferenceId, payload },
-  });
+  const event = JSON.parse(rawBody);
 
-  return NextResponse.json({ ok: true });
+  switch (event.type) {
+    case "CONSENT_STATUS_UPDATE": {
+      const status = mapConsentStatus(event.status);
+      if (status) {
+        await db.linkedAccount.updateMany({
+          where: { consentId: event.consentId },
+          data: { consentStatus: status },
+        });
+      }
+      break;
+    }
+    case "DATA_READY":
+      // A real implementation would enqueue a call to
+      // fetchDataSession()/the /api/aa/sync route here rather than doing
+      // the fetch inline in the webhook handler — left as a TODO since
+      // there's no sandbox account wired up to exercise it against.
+      break;
+    default:
+      console.warn(`Unhandled Setu webhook event type: ${event.type}`);
+  }
+
+  return NextResponse.json({ received: true });
+}
+
+function mapConsentStatus(status: string): ConsentStatus | null {
+  switch (status) {
+    case "ACTIVE":
+      return ConsentStatus.ACTIVE;
+    case "PAUSED":
+      return ConsentStatus.PAUSED;
+    case "REVOKED":
+      return ConsentStatus.REVOKED;
+    case "EXPIRED":
+      return ConsentStatus.EXPIRED;
+    default:
+      return null;
+  }
 }

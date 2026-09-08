@@ -117,23 +117,42 @@ This is a repository **structure**, not a finished app. Concretely:
 
 ## Local setup
 
-1. `cp .env.example .env` and fill in:
-   - `DATABASE_URL` — Supabase project → Database → Connection string.
+1. **Create a Supabase project**: [supabase.com](https://supabase.com) → sign
+   in → New project → pick an org, name it (e.g. `spendwise`), set a
+   database password (save it — you'll need it below), pick a region,
+   create. Takes ~2 minutes to provision.
+2. `cp .env.example .env` and fill in:
+   - `DATABASE_URL` / `DIRECT_URL` — the project's **Connect** button (top
+     of the dashboard) → **ORMs** tab → **Prisma**. It gives you both
+     strings pre-filled except the password (the one you set in step 1).
    - `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` —
-     Supabase project → API Keys. Use the new **publishable** key, not the
+     Project Settings → API Keys. Use the new **publishable** key, not the
      legacy `anon` JWT key (Supabase is deprecating `anon`/`service_role`
      by end of 2026).
    - `SETU_*` — sign up at [bridge.setu.co](https://bridge.setu.co/v2),
      create an Account Aggregator (Data) app, sandbox mode.
    - `ANTHROPIC_API_KEY`, `NEXT_PUBLIC_POSTHOG_KEY` — optional until
      categorization/analytics are wired up.
-2. In Supabase Dashboard → Authentication → URL Configuration, add
-   `http://localhost:3000/auth/callback` as a redirect URL (required for
-   the magic-link sign-in to come back to this app instead of erroring).
-3. `npm install`
-4. `npx prisma migrate dev --name init` — creates the tables in Supabase
+3. Authentication → URL Configuration → add `http://localhost:3000/auth/callback`
+   as a redirect URL (required for the magic-link sign-in to come back to
+   this app instead of erroring).
+4. `npm install`
+5. `npx prisma migrate dev --name init` — creates the tables in Supabase
    and generates the Prisma client.
-5. `npm run dev`
+6. `npm run db:seed` — seeds the default categories (Food, Transport,
+   Shopping, Bills, Entertainment, Income). This part is safe to run
+   against any environment; nothing else is seeded by it, so a fresh
+   sign-in genuinely has no linked accounts/transactions/budget, which
+   every page now renders a real empty state for.
+7. `npm run dev`, sign in at `/login` with any email you can receive mail
+   at — Supabase's magic link is real even against sandbox data.
+8. `npm run db:seed:demo -- you@example.com` (the same email you just
+   signed in with) — attaches 3 linked accounts, ~20 transactions across
+   6 months, and a monthly + per-category budget to *that* user. Every
+   number matches `design/*.dc.html` (see `prisma/seed-demo.ts`'s
+   comment), so the running app should look like the design canvas.
+   Needs step 7 done first — it looks up the user by email, and that
+   User row only exists after a real sign-in (see `auth/callback/route.ts`).
 
 Note: `prisma`/`@prisma/client` are pinned to `6.19.3`. Prisma 7 replaced
 the classic CLI (`generate`, `migrate dev`) with a different, platform-hosted

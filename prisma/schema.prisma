@@ -7,8 +7,16 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  // Transaction-mode pooler (port 6543, ?pgbouncer=true) — what the app
+  // uses at runtime. Next.js on Vercel is serverless, so every request can
+  // be a fresh connection; a direct connection would exhaust Postgres's
+  // connection limit fast.
+  url       = env("DATABASE_URL")
+  // Session-mode / direct connection (port 5432) — migrate/introspect need
+  // a real persistent connection, which the transaction-mode pooler can't
+  // give them (prepared statements don't survive across pooled requests).
+  directUrl = env("DIRECT_URL")
 }
 
 // ─────────────────────────────────────────────────────────────

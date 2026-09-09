@@ -11,7 +11,9 @@
     "db:migrate": "prisma migrate dev",
     "db:seed": "tsx prisma/seed.ts",
     "db:seed:demo": "tsx prisma/seed-demo.ts",
-    "dev:signin": "tsx scripts/dev-signin.ts"
+    "dev:signin": "tsx scripts/dev-signin.ts",
+    "db:categorize": "tsx scripts/categorize-existing.ts",
+    "setu:smoke": "tsx scripts/setu-smoke.ts"
   },
   "dependencies": {
     "@prisma/client": "6.19.3",

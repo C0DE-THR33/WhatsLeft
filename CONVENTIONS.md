@@ -121,27 +121,55 @@ visual decisions — colors, spacing, the icon-tile system, copy tone. Code
 should port it faithfully, then extend it, never invent a parallel
 aesthetic. Concretely:
 
-> ⚠️ **KNOWN DIVERGENCE — `globals.css` does not currently match the
-> canvas.** The September 2026 rebuild was done believing the canvas was
-> gone (the working tree had been wiped; the files were still in git
-> history, unnoticed until commit time), so its palette was invented from
-> scratch and is a *parallel aesthetic* — exactly what this section says
-> not to do. The differences are substantive, not cosmetic:
+> ✅ **Divergence resolved (September 2026).** `globals.css` now carries
+> the canvas's OKLCH values verbatim — teal accent, light-first ground,
+> the `--warn` / `--accent-soft` / `--fg-faint` tokens the invented
+> palette lacked. The rebuild had reinvented all of this while believing
+> the canvas was lost; it was in git history the whole time. If a palette
+> ever looks "missing" again, check `git ls-tree HEAD design/` before
+> designing a replacement.
 >
-> | | Canvas (source of truth) | `globals.css` today |
-> |---|---|---|
-> | Color space | OKLCH | hex |
-> | Accent | teal `oklch(0.55 0.13 175)` | indigo `#4f46e5` |
-> | Ground | light-first | dark-first, light via `prefers-color-scheme` |
-> | Extra tokens | `--warn`, `--accent-soft`, `--text-faint`, `--accent-soft-text` | absent |
-> | Sixth category | `--cat-income` | `--cat-other` |
->
-> The last row is the one with teeth: the canvas treats **income** as a
-> category, while `lib/categories.ts` ships **other**. Reconciling isn't
-> a find-and-replace on color values — it's a product question about
-> whether income is a spending category at all, and it touches
-> `CATEGORY_ICONS`, the seed data, and the `direction: CREDIT` handling
-> in `queries.ts`. Decide that before porting the palette.
+> **Still open — the sixth category.** The canvas's sixth swatch is
+> **income**; `lib/categories.ts` ships **other**. `--color-cat-income`
+> is defined and currently unused, so the hue isn't lost, but the two
+> aren't reconciled. This is a product question, not a find-and-replace:
+> whether income is a spending category at all touches `CATEGORY_ICONS`,
+> the seed data, and the `direction: CREDIT` handling in `queries.ts`.
+> Decide it before wiring that token to anything.
+
+### Depth, and why the first pass read as flat
+
+A palette alone doesn't make an interface feel substantial. The first
+implementation used every correct token and still looked meek. What was
+missing was in four places, and they're worth stating as rules:
+
+- **Tinted surfaces, not neutral ones.** A card tinted toward its own
+  accent hue (`--color-accent-soft`) reads as a distinct plane; the same
+  card in neutral gray reads as absence. Hero panels get the tint, list
+  cards stay on `--color-surface`, and the ground is `--color-bg` — three
+  planes, not one.
+- **Icons need a body.** A 1.75px hairline glyph disappears against a
+  saturated tile at 18px. Category icons are two-tone: translucent
+  `currentColor` fill behind a solid stroke, so the shape is readable at
+  tile size. Still inline stroke-SVG — the rule below is unchanged, the
+  weight is what changed.
+- **Numbers carry the hierarchy.** Money is the content of a finance app,
+  so amounts are bold and large with `tabular-nums` (the `.tnum` class);
+  proportional digits make a column of amounts visibly ragged.
+- **A bare progress bar says nothing.** 75% spent is healthy on the 25th
+  and alarming on the 8th, so every budget bar draws the month's own
+  progress as a marker on the same axis (`BudgetPaceBar`). Prefer showing
+  the comparison over making the reader compute it.
+
+**On borrowing from other apps.** Taking visual *inspiration* from
+another product is fine and normal — layout, density, and color
+direction aren't copyrightable. Copying its **asset files** is not the
+same act. Cashew, the reference for this pass, is GPL-3.0: bundling its
+artwork would oblige SpendWise (currently unlicensed, so
+all-rights-reserved) to become GPL-3.0 with published source. Check the
+licence before copying any file out of another repository, and when in
+doubt draw it yourself — which the inline-SVG rule below already
+requires.
 
 - **Every color is a CSS custom property**, defined once in
   `src/app/globals.css`'s `:root` and mapped into Tailwind's `@theme
@@ -206,6 +234,119 @@ duplicated.
 
 ---
 
+
+## 4b. Categorization rules
+
+`lib/categorize.ts` is the deterministic pass — the "rules first" in #1's
+"rules first, LLM for ambiguous cases". It is pure (no db, no network) so
+it is verifiable with a throwaway script, and the DB-touching half lives
+in `lib/auto-categorize.ts`, shared by the Setu ingest path and the
+`db:categorize` backfill so neither grows its own copy.
+
+Three rules that are not obvious until they break:
+
+- **Match whole words, never substrings.** `OLA` is a substring of
+  CHOCOLATE, SOLAR, GORILLA and TESLA; `LIC` of LICENSE; `PVR` of SPVRX.
+  Substring matching on short merchant names files a chocolate purchase
+  under Transport and gives no sign it did.
+- **Brands are a tier above generic keywords, not just longer strings.**
+  The first version ranked purely by phrase length, so the generic
+  keyword `RECHARGE` (bills, 8 chars) beat the brand `METRO` (transport,
+  5) and filed a metro top-up under Bills. Named merchants are matched as
+  a class first; only if none hit does the generic pass run. Within a
+  tier, longer wins, which is what makes `AMAZON PRIME` beat `AMAZON`.
+- **Return null rather than guess.** An unmatched transaction stays
+  visibly Uncategorized — a real state the UI renders (#4) and the
+  hand-off point for the LLM pass. A wrong automatic category is worse
+  than an honest blank one: the user cannot tell it is wrong without
+  auditing every row, and the budget misreports until they do.
+
+**Never overwrite a human.** `categorySource` distinguishes RULE / LLM /
+MANUAL, and MANUAL includes the decision to *clear* a category back to
+uncategorized — so the categorize route records MANUAL even when setting
+`categoryId: null`. Without that, a deliberate "mark as uncategorized" is
+indistinguishable from "never categorized" and the next backfill silently
+overrides it. Re-syncs use `update: {}` for the same reason.
+
+**Demo data must go through the real rules.** `seed-demo.ts` used to leave
+a random 10% of *all* merchants uncategorized, which produced rows like
+"Uber — Uncategorized" and made the feature look broken. It now
+categorizes through `categorizeByRules` and draws its deliberately
+uncategorized slice from merchants the rules genuinely cannot place, so
+the uncategorized state still has real data behind it without any
+recognizable merchant being left unsorted.
+
+## 4c. Account Aggregator conventions
+
+The AA flow is the one place where a third party calls *us*, and where the
+thing identifying a user arrives as a bare uuid in a query string. Four
+rules follow from that.
+
+- **A consent id is not an identity.** Both paths back from Setu — the
+  browser redirect to `/connect-bank?id=…&success=true` and the webhook —
+  carry a consent id and nothing else trustworthy. `AaConsent` exists so
+  that id can be turned into a user id by a row *we* wrote before the
+  redirect ever happened. Setu will echo whatever you put in the consent's
+  `context`, and it is fine to send `userId` there, but reading it back is
+  not an ownership check.
+- **An unauthenticated webhook may name a fact, never assert one.**
+  `/api/aa/webhook` is on the public allowlist and Setu documents the
+  notification payloads without documenting a signing scheme. So the route
+  takes only the ids from the body and re-reads the consent or data session
+  from Setu's API with our own credentials before touching a row. A forged
+  POST can make the server re-read something it already owns; it cannot
+  assert a status or file a transaction. The signature check is defence in
+  depth on top of that — and note what the previous stub did instead:
+  returning `false` unconditionally, which silently rejected every real
+  notification rather than every forged one.
+- **`linkRefNumber` is the join key, not the masked account number.** FI
+  data arrives nested per FIP per account in one payload covering the whole
+  consent, and masked numbers are not unique across FIPs. Scoping that
+  lookup by `userId` is also what makes ingest safe: a session belonging to
+  someone else resolves to zero of this user's accounts and writes nothing.
+- **Fetching data is two calls, and the first one is asynchronous.**
+  `POST /sessions` asks the AA to go collect; `GET /sessions/:id` returns
+  `PENDING` until the FIPs deliver. `PENDING` is not an empty statement —
+  a UI that treats it as one tells the user their bank has no transactions.
+  The session's range must also sit inside the consent's, which is why
+  `AaConsent` stores the range it was raised with rather than recomputing
+  "the last twelve months" later and drifting past the boundary.
+
+- **A consent carries no application identity, by construction.** The
+  gateway validates `context` keys against a fixed vocabulary
+  (`accounttype`, `fipId`, `consentReviewAt`, `purposeDescription`,
+  `purposeCode`, `alternateNumber`, `accountSelectionMode`,
+  `transactionType`, `excludeFipIds`, `excludeFipIdsByFiType`) and 400s on
+  anything else — so `userId` cannot be smuggled through it. The `AaConsent`
+  row isn't just the trustworthy mapping from consent id to user, it is the
+  only one that exists.
+
+Worth recording as a case study for #8, in two layers. The original Setu
+client had every endpoint shape wrong — the consent body and response, the
+number of calls needed to read data, the nesting of the data itself —
+because it was written from familiarity rather than from the docs. It
+typechecked, linted, and would have failed on the first live call.
+
+Then the docs-based rewrite was *still* wrong in three ways that only a real
+call could expose, which is the more useful half of the lesson:
+
+- **The documented path is unversioned; the live sandbox only serves `/v2`.**
+  Worse, the unversioned path is routed to something that answers valid
+  credentials with `401 INVALID_CREDENTIALS`, so the symptom accuses the
+  keys and says nothing about the URL. An hour could go into re-issuing
+  correct credentials. The tell was that the *same headers* got a business
+  error (`400 Customer vua not found`) from `/v2/consents` — proof that
+  authentication had succeeded and only the path was wrong.
+- **Linked accounts come back in a top-level `accountsLinked` array**, not
+  the `detail.accounts` the consent object documentation implies.
+- **`context` is a closed vocabulary** (above), not free-form key/values.
+
+The rule this earns, on top of "read the current docs": **for any external
+API, make one real call before believing the integration is finished, and
+build the thing that makes that call cheap** — here `npm run setu:smoke`,
+which needs no database row, no session, and no browser. All three of the
+above surfaced within minutes of the first one.
+
 ## 5. Auth conventions
 
 - **`src/proxy.ts`** (not `middleware.ts` — see below) refreshes the
@@ -266,6 +407,18 @@ duplicated.
   two tables specifically to avoid ever needing a nullable column in a
   unique constraint. Where a nullable-key upsert seems needed, use
   `findFirst` + conditional `create` instead.
+- **`not` / `NOT` filters silently exclude NULL rows.** Postgres
+  three-valued logic: for a row where `col IS NULL`, `NOT (col = 'X')`
+  evaluates to NULL, not true, so the row is filtered out. Both Prisma
+  spellings — `NOT: { col: "X" }` and `col: { not: "X" }` — compile to
+  that. A backfill meant to skip user-edited rows
+  (`NOT: { categorySource: MANUAL }`) matched **zero** of the 10 rows it
+  existed to fix, because all of them had a null source, and it reported
+  success while doing nothing. When a column is nullable, spell it out:
+  `OR: [{ col: null }, { col: { not: "X" } }]`. Any filter written as
+  "everything except X" over a nullable column deserves a row count
+  before and after.
+
 - **Two seed scripts, two different safety levels.** `seed.ts` (shipped
   defaults, e.g. categories) is safe to run against any environment,
   any number of times. `seed-demo.ts` (rich sample data for one named

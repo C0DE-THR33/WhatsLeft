@@ -1,9 +1,29 @@
-// Thin client for Setu's Account Aggregator sandbox
-// (https://docs.setu.co/data/account-aggregator). Every call needs a live
-// sandbox client id/secret, which this repo doesn't ship — see
-// .env.example. Mirrors the Supabase pattern (CONVENTIONS.md #5): missing
-// config throws SetuNotConfiguredError, caught by callers to degrade
-// gracefully instead of 500ing the connect-bank flow.
+import { createHmac, timingSafeEqual } from "node:crypto";
+import {
+  parseConsentAccounts,
+  parseDataSession,
+  type ParsedConsentAccount,
+  type ParsedDataSession,
+} from "@/lib/setu-parse";
+
+// Client for Setu's Account Aggregator gateway, pointed at the sandbox by
+// default (https://docs.setu.co/data/account-aggregator). Every call needs
+// sandbox credentials this repo does not ship — see .env.example and
+// README's "Connecting the Setu AA sandbox". Mirrors the Supabase pattern
+// (CONVENTIONS.md #5): missing config throws SetuNotConfiguredError, which
+// callers catch to degrade gracefully instead of 500ing the connect-bank
+// flow.
+//
+// Shapes here are written against Setu's current docs, not from memory —
+// the previous version of this file guessed, and guessed wrong in three
+// places (CONVENTIONS.md #8):
+//   - the consent endpoint takes `vua` + `dataRange` and returns
+//     `{ id, url, status, detail }`, not `{ consentId, consentHandle,
+//     redirectUrl }`;
+//   - fetching data is two calls, POST /sessions then GET /sessions/:id,
+//     not a single read of a session id that arrives from nowhere;
+//   - FI data comes back nested per FIP per account, not as a flat
+//     `transactions` array.
 
 export class SetuNotConfiguredError extends Error {
   constructor() {
@@ -15,7 +35,19 @@ export class SetuNotConfiguredError extends Error {
   }
 }
 
-function isSetuConfigured(): boolean {
+/** A non-2xx from Setu. Carries the body, which is where the real reason is. */
+export class SetuApiError extends Error {
+  constructor(
+    readonly status: number,
+    readonly body: string,
+    endpoint: string,
+  ) {
+    super(`Setu ${endpoint} failed: ${status} ${body.slice(0, 500)}`);
+    this.name = "SetuApiError";
+  }
+}
+
+export function isSetuConfigured(): boolean {
   return Boolean(
     process.env.SETU_CLIENT_ID &&
       process.env.SETU_CLIENT_SECRET &&
@@ -23,8 +55,46 @@ function isSetuConfigured(): boolean {
   );
 }
 
-const SANDBOX_BASE_URL = "https://fiu-sandbox.setu.co";
+/**
+ * Sandbox and production differ only by host, so this is an env var rather
+ * than a constant — pointing a deploy at production is a config change, not
+ * a code change.
+ */
+function baseUrl(): string {
+  return (process.env.SETU_AA_BASE_URL ?? "https://fiu-sandbox.setu.co").replace(/\/+$/, "");
+}
 
+/**
+ * The gateway's API version, and a trap worth knowing about: Setu's docs
+ * document these endpoints as `POST /consents` against the sandbox base
+ * URL, but the live sandbox only serves them under `/v2`. The unversioned
+ * path is still routed — to something that rejects perfectly valid
+ * credentials with `401 INVALID_CREDENTIALS`, so the symptom points at the
+ * keys rather than the URL. Found by probing both paths with the same
+ * headers: `/consents` 401s, `/v2/consents` returns 201.
+ */
+const API_VERSION = "/v2";
+
+/**
+ * The AA handle a mobile number is turned into a VUA with (`9999999999` →
+ * `9999999999@onemoney`). Which AA a product instance is wired to is a
+ * Bridge setting, so it has to be configurable here to match.
+ */
+export function toVua(mobileNumber: string): string {
+  const digits = mobileNumber.replace(/\D/g, "").slice(-10);
+  const handle = process.env.SETU_AA_HANDLE ?? "onemoney";
+  return `${digits}@${handle}`;
+}
+
+export function isValidMobileNumber(mobileNumber: string): boolean {
+  return /^[6-9]\d{9}$/.test(mobileNumber.replace(/\D/g, "").slice(-10));
+}
+
+// Setu's sandbox authenticates FIU calls with the three credentials the
+// Bridge hands out in "Step 2 — Test your product". (Products issued OAuth
+// keys instead send `Authorization: Bearer <token>` alongside the same
+// x-product-instance-id; if that is what your Bridge project shows, this is
+// the one function that needs to change.)
 function authHeaders(): Record<string, string> {
   if (!isSetuConfigured()) {
     throw new SetuNotConfiguredError();
@@ -37,91 +107,201 @@ function authHeaders(): Record<string, string> {
   };
 }
 
-export interface ConsentRequestResult {
-  consentId: string;
-  consentHandle: string;
-  redirectUrl: string;
+/**
+ * Raw request, exported for scripts/setu-smoke.ts so it can dump payloads
+ * exactly as Setu sends them. Application code should use the typed
+ * functions below — the point of the parsers is that no route handler ever
+ * touches an unnormalised FIP payload.
+ */
+export async function setuRequest(path: string, init?: RequestInit): Promise<unknown> {
+  return setuFetch(path, init);
 }
 
-/** Starts a consent request for a user to link one or more bank accounts. */
-export async function createConsentRequest(
-  userId: string,
-  redirectUrl: string,
-): Promise<ConsentRequestResult> {
-  const response = await fetch(`${SANDBOX_BASE_URL}/consents`, {
-    method: "POST",
-    headers: authHeaders(),
-    body: JSON.stringify({
-      consentDuration: { unit: "MONTH", value: "12" },
-      context: [{ key: "userId", value: userId }],
-      redirectUrl,
-    }),
+async function setuFetch(path: string, init?: RequestInit): Promise<unknown> {
+  const headers = authHeaders();
+  const response = await fetch(`${baseUrl()}${API_VERSION}${path}`, {
+    ...init,
+    headers: { ...headers, ...(init?.headers ?? {}) },
+    cache: "no-store",
   });
 
   if (!response.ok) {
-    throw new Error(`Setu consent request failed: ${response.status}`);
+    throw new SetuApiError(
+      response.status,
+      await response.text(),
+      `${init?.method ?? "GET"} ${path}`,
+    );
   }
 
   return response.json();
 }
 
-export type SetuConsentStatus = "PENDING" | "ACTIVE" | "PAUSED" | "REVOKED" | "EXPIRED";
+// --- Consent ---------------------------------------------------------------
 
-export async function getConsentStatus(consentId: string): Promise<SetuConsentStatus> {
-  const response = await fetch(`${SANDBOX_BASE_URL}/consents/${consentId}`, {
-    headers: authHeaders(),
-  });
-
-  if (!response.ok) {
-    throw new Error(`Setu consent status check failed: ${response.status}`);
-  }
-
-  const data = await response.json();
-  return data.status as SetuConsentStatus;
+export interface DataRange {
+  from: Date;
+  to: Date;
 }
 
-export interface SetuFetchedTransaction {
-  externalId: string;
-  amount: string;
-  direction: "DEBIT" | "CREDIT";
-  description: string;
-  mode: string;
-  transactionTimestamp: string;
-}
-
-/** Pulls newly available statement data for an active consent's data session. */
-export async function fetchDataSession(
-  dataSessionId: string,
-): Promise<SetuFetchedTransaction[]> {
-  const response = await fetch(
-    `${SANDBOX_BASE_URL}/sessions/${dataSessionId}`,
-    { headers: authHeaders() },
-  );
-
-  if (!response.ok) {
-    throw new Error(`Setu data session fetch failed: ${response.status}`);
-  }
-
-  const data = await response.json();
-  return data.transactions ?? [];
+export interface ConsentRequestResult {
+  /** Setu's consent id — the value echoed back on the redirect and webhooks. */
+  consentId: string;
+  /** Setu-hosted approval screens; the browser is sent here next. */
+  url: string;
+  status: string;
 }
 
 /**
- * Setu signs webhook payloads; the route handler at
- * src/app/api/aa/webhook/route.ts must verify this before trusting the
- * body. Sandbox docs specify an HMAC-SHA256 over the raw body using the
- * client secret — implement against the current docs before going live,
- * this is a placeholder shape.
+ * Raises a consent request. Purpose, fiTypes, consent mode and the rest of
+ * the consent object are configured once on the Bridge product, so the
+ * per-request body is only who, how long, over what range, and where to
+ * come back to.
  */
-export function verifyWebhookSignature(rawBody: string, signature: string): boolean {
-  if (!isSetuConfigured()) {
-    throw new SetuNotConfiguredError();
+export async function createConsentRequest(params: {
+  vua: string;
+  redirectUrl: string;
+  dataRange: DataRange;
+  durationMonths?: number;
+}): Promise<ConsentRequestResult> {
+  // No `context` here, and no way to add one: the gateway validates context
+  // keys against a fixed vocabulary (accounttype, fipId, consentReviewAt,
+  // purposeDescription, purposeCode, alternateNumber, accountSelectionMode,
+  // transactionType, excludeFipIds, excludeFipIdsByFiType) and rejects
+  // anything else with a 400. So a consent carries no application identity
+  // whatsoever, and the AaConsent row is not merely the trustworthy way to
+  // map a consent id to a user — it is the only way (CONVENTIONS.md #4c).
+  const data = (await setuFetch("/consents", {
+    method: "POST",
+    body: JSON.stringify({
+      consentDuration: { unit: "MONTH", value: String(params.durationMonths ?? 12) },
+      vua: params.vua,
+      dataRange: {
+        from: params.dataRange.from.toISOString(),
+        to: params.dataRange.to.toISOString(),
+      },
+      redirectUrl: params.redirectUrl,
+    }),
+  })) as { id?: string; url?: string; status?: string };
+
+  if (!data.id || !data.url) {
+    throw new Error("Setu consent response was missing id or url");
   }
 
-  // NOTE: wire up the real HMAC comparison against Setu's current webhook
-  // docs before this handles live traffic — left unimplemented here since
-  // there's no sandbox secret to verify it against yet.
-  void rawBody;
-  void signature;
-  return false;
+  return { consentId: data.id, url: data.url, status: data.status ?? "PENDING" };
+}
+
+export type SetuConsentStatus =
+  | "PENDING"
+  | "ACTIVE"
+  | "REJECTED"
+  | "PAUSED"
+  | "REVOKED"
+  | "EXPIRED"
+  | "FAILED";
+
+export interface SetuConsent {
+  consentId: string;
+  status: SetuConsentStatus;
+  consentExpiry: Date | null;
+  /** Populated once the user has approved and picked accounts. */
+  accounts: ParsedConsentAccount[];
+}
+
+/**
+ * Reads a consent back. `expanded=true` is what makes the linked accounts
+ * come along — without it there is no way to learn which accounts the user
+ * actually picked, and therefore nothing to create LinkedAccount rows from.
+ */
+export async function getConsent(consentId: string): Promise<SetuConsent> {
+  const data = (await setuFetch(`/consents/${encodeURIComponent(consentId)}?expanded=true`)) as {
+    id?: string;
+    status?: string;
+    detail?: { consentExpiry?: string };
+  };
+
+  const expiry = data.detail?.consentExpiry ? new Date(data.detail.consentExpiry) : null;
+
+  return {
+    consentId: data.id ?? consentId,
+    status: (data.status ?? "PENDING") as SetuConsentStatus,
+    consentExpiry: expiry && !Number.isNaN(expiry.getTime()) ? expiry : null,
+    // The whole payload, not `detail`: the linked accounts come back in a
+    // top-level `accountsLinked` array, which is not where the docs' consent
+    // object suggested looking. The parser accepts both.
+    accounts: parseConsentAccounts(data),
+  };
+}
+
+// --- Data sessions ---------------------------------------------------------
+
+/**
+ * Asks the AA to go fetch statement data for an active consent. The range
+ * must sit inside the consent's own range or Setu rejects it — which is why
+ * AaConsent stores the range it was raised with.
+ */
+export async function createDataSession(params: {
+  consentId: string;
+  dataRange: DataRange;
+}): Promise<{ dataSessionId: string; status: string }> {
+  const data = (await setuFetch("/sessions", {
+    method: "POST",
+    body: JSON.stringify({
+      consentId: params.consentId,
+      dataRange: {
+        from: params.dataRange.from.toISOString(),
+        to: params.dataRange.to.toISOString(),
+      },
+      format: "json",
+    }),
+  })) as { id?: string; status?: string };
+
+  if (!data.id) {
+    throw new Error("Setu data session response was missing id");
+  }
+
+  return { dataSessionId: data.id, status: data.status ?? "PENDING" };
+}
+
+/**
+ * Reads a data session. A session is PENDING until the FIPs deliver, so a
+ * caller either polls this or waits for the SESSION_STATUS_UPDATE webhook;
+ * PARTIAL means some accounts are ready and others failed, and is worth
+ * ingesting rather than discarding.
+ */
+export async function getDataSession(dataSessionId: string): Promise<ParsedDataSession> {
+  return parseDataSession(await setuFetch(`/sessions/${encodeURIComponent(dataSessionId)}`));
+}
+
+// --- Webhooks --------------------------------------------------------------
+
+export function isWebhookSecretConfigured(): boolean {
+  return Boolean(process.env.SETU_WEBHOOK_SECRET);
+}
+
+/**
+ * HMAC-SHA256 over the raw body, keyed with SETU_WEBHOOK_SECRET — the
+ * shared secret set on the Bridge notification endpoint.
+ *
+ * Setu's docs describe the notification payloads but not a signing scheme,
+ * so this is only as good as what the Bridge is actually configured to
+ * send. That is exactly why the webhook route never trusts a payload's
+ * *contents* even when this passes: it re-reads the consent or session from
+ * Setu's API with our own credentials and acts on that instead. A missing
+ * secret therefore degrades to "unauthenticated hint" rather than to
+ * "reject everything" — which is what the previous stub did by returning
+ * false unconditionally, silently discarding every real notification.
+ */
+export function verifyWebhookSignature(rawBody: string, signature: string): boolean {
+  const secret = process.env.SETU_WEBHOOK_SECRET;
+  if (!secret || !signature) return false;
+
+  const provided = Buffer.from(signature.replace(/^sha256=/i, "").trim(), "utf8");
+  const expected = Buffer.from(
+    createHmac("sha256", secret).update(rawBody, "utf8").digest("hex"),
+    "utf8",
+  );
+
+  // Length check first: timingSafeEqual throws on a length mismatch rather
+  // than returning false.
+  return provided.length === expected.length && timingSafeEqual(provided, expected);
 }

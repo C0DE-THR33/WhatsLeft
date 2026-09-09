@@ -33,6 +33,7 @@ model User {
   createdAt DateTime @default(now())
 
   linkedAccounts LinkedAccount[]
+  aaConsents     AaConsent[]
   categories     Category[]
   monthlyBudgets MonthlyBudget[]
   investments    Investment[]
@@ -55,7 +56,15 @@ model LinkedAccount {
   fipName               String
   maskedAccountNumber   String
   accountType           AccountType
-  consentId             String // Setu AA consent handle backing this link
+  consentId             String // Setu AA consent id backing this link (AaConsent.id)
+  // The FIP's own handle for this linked account, echoed in every FI data
+  // session payload. It is the ONLY stable key that maps a block of fetched
+  // transactions back to a row here — masked account numbers are not unique
+  // across FIPs and can repeat. Nullable because the synthetic CASH account
+  // has no AA link behind it; that nullability is also why lookups use
+  // findFirst + conditional create rather than an upsert on a compound
+  // unique containing it (CONVENTIONS.md #6).
+  linkRefNumber         String?
   consentStatus         ConsentStatus @default(PENDING)
   consentExpiresAt      DateTime?
   lastSyncedAt          DateTime?
@@ -64,6 +73,7 @@ model LinkedAccount {
   transactions Transaction[]
 
   @@index([userId])
+  @@index([consentId])
   @@map("linked_accounts")
 }
 
@@ -71,6 +81,15 @@ enum AccountType {
   SAVINGS
   CURRENT
   CREDIT_CARD
+  // Manually entered cash spending. A cash transaction has no bank behind
+  // it, but Transaction.linkedAccountId is non-nullable on purpose:
+  // `linkedAccount.userId` is the ONE path from a transaction to its owner
+  // (CONVENTIONS.md #5), and every ownership guard in the app is written
+  // against it. Rather than make that column nullable — which would leave
+  // manual rows with no ownership path at all, and force a second, parallel
+  // owner check everywhere — each user gets one synthetic CASH account that
+  // manual entries hang off. The invariant survives untouched.
+  CASH
 }
 
 enum ConsentStatus {
@@ -79,6 +98,47 @@ enum ConsentStatus {
   PAUSED
   REVOKED
   EXPIRED
+  // The synthetic CASH account above. It is not backed by an AA consent at
+  // all, so none of the real statuses are true of it — marking it ACTIVE
+  // would claim a consent that does not exist and make it show up as a
+  // live bank link in Settings.
+  NOT_APPLICABLE
+}
+
+// One row per consent request raised with Setu's AA gateway.
+//
+// Why this exists at all: a consent is created *before* any account is
+// known — the user picks their FIPs and accounts on Setu's screens, minutes
+// later, in a different browser context. Until they do, the only thing
+// tying a Setu consent id to a SpendWise user is this row. Both paths back
+// from Setu (the browser redirect to /connect-bank?id=..., and the
+// server-to-server webhook at /api/aa/webhook) arrive carrying nothing but
+// that consent id, and neither may be trusted to say who the user is — the
+// webhook in particular is an unauthenticated public endpoint. Looking the
+// id up here is what turns it into an ownership fact (CONVENTIONS.md #5).
+//
+// `dataRangeFrom`/`dataRangeTo` are stored because Setu rejects a data
+// session whose range falls outside the range the consent was raised with,
+// and by the time a session is created the original request object is long
+// gone.
+model AaConsent {
+  id            String        @id // Setu's own consent id (a uuid), not a generated key
+  userId        String
+  user          User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  vua           String // the virtual user address (<mobile>@<aa handle>) the consent was raised against
+  status        ConsentStatus @default(PENDING)
+  dataRangeFrom DateTime
+  dataRangeTo   DateTime
+  expiresAt     DateTime?
+  // Set once the consent's accounts have been turned into LinkedAccount
+  // rows, so the finalize path is cheap to re-run (the browser hits it on
+  // every return from Setu, and the webhook may beat it there).
+  linkedAt      DateTime?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  @@index([userId])
+  @@map("aa_consents")
 }
 
 // A single bank-statement line, pulled from Setu AA sync or webhook. Money

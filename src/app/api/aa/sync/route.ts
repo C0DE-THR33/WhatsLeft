@@ -1,65 +1,70 @@
 import { NextResponse } from "next/server";
 import { getCurrentUserIdOrResponse } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { fetchDataSession, SetuNotConfiguredError } from "@/lib/setu";
-import { TransactionDirection } from "@prisma/client";
+import { ingestDataSession, startDataSession } from "@/lib/aa-ingest";
+import { SetuApiError, SetuNotConfiguredError } from "@/lib/setu";
 
-// Pulls the latest statement data for one of the signed-in user's linked
-// accounts and upserts it into `transactions`. `externalId` (the FIP's own
-// transaction id) is what makes this idempotent — re-running a sync for
-// data already stored just no-ops those rows, since [linkedAccountId,
-// externalId] is a real (non-nullable) compound unique, so `upsert` is
-// safe here unlike the Category default-row case (CONVENTIONS.md #6).
+// Pulls a data session's statement lines into `transactions`.
+//
+// Takes a consentId, not a bare linkedAccountId: FI data arrives per FIP
+// per account in one payload covering every account under the consent, so
+// the account a row belongs to is decided by its linkRefNumber during
+// ingest rather than by the caller. The consent is also what anchors the
+// ownership check — a data session id on its own says nothing about who it
+// belongs to.
 export async function POST(request: Request) {
   const auth = await getCurrentUserIdOrResponse();
   if ("response" in auth) return auth.response;
   const { userId } = auth;
 
-  const { linkedAccountId, dataSessionId } = await request.json();
-  if (!linkedAccountId || !dataSessionId) {
-    return NextResponse.json({ error: "linkedAccountId and dataSessionId are required" }, { status: 400 });
+  let body: { consentId?: string; dataSessionId?: string };
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ error: "Expected a JSON body" }, { status: 400 });
   }
 
-  // Ownership check, same shape as every mutating route: prove the
-  // account being synced actually belongs to whoever is signed in
-  // (CONVENTIONS.md #5).
-  const linkedAccount = await db.linkedAccount.findFirst({
-    where: { id: linkedAccountId, userId },
-  });
-  if (!linkedAccount) {
+  const consentId = (body.consentId ?? "").trim();
+  if (!consentId) {
+    return NextResponse.json({ error: "consentId is required" }, { status: 400 });
+  }
+
+  const stored = await db.aaConsent.findFirst({ where: { id: consentId, userId } });
+  if (!stored) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
   try {
-    const fetched = await fetchDataSession(dataSessionId);
+    // No session id means "fetch me the latest" — the normal shape of a
+    // pull-to-refresh, as opposed to the connect flow which already has a
+    // session id from /api/aa/link.
+    const dataSessionId =
+      (body.dataSessionId ?? "").trim() || (await startDataSession(consentId))?.dataSessionId;
 
-    await db.$transaction(
-      fetched.map((tx) =>
-        db.transaction.upsert({
-          where: { linkedAccountId_externalId: { linkedAccountId, externalId: tx.externalId } },
-          update: {},
-          create: {
-            linkedAccountId,
-            externalId: tx.externalId,
-            amount: tx.amount,
-            direction: tx.direction === "CREDIT" ? TransactionDirection.CREDIT : TransactionDirection.DEBIT,
-            description: tx.description,
-            mode: tx.mode,
-            transactionDate: new Date(tx.transactionTimestamp),
-          },
-        }),
-      ),
-    );
+    if (!dataSessionId) {
+      return NextResponse.json(
+        { error: "This consent is not active, so there is nothing to sync." },
+        { status: 409 },
+      );
+    }
 
-    await db.linkedAccount.update({
-      where: { id: linkedAccountId },
-      data: { lastSyncedAt: new Date() },
+    const result = await ingestDataSession({ userId, dataSessionId });
+
+    // PENDING is not an error: the FIPs have not delivered yet, and the
+    // caller should poll again rather than treat an empty sync as "your
+    // bank has no transactions".
+    return NextResponse.json({
+      status: result.status,
+      synced: result.synced,
+      dataSessionId,
     });
-
-    return NextResponse.json({ synced: fetched.length });
   } catch (error) {
     if (error instanceof SetuNotConfiguredError) {
       return NextResponse.json({ error: error.message }, { status: 503 });
+    }
+    if (error instanceof SetuApiError) {
+      console.error(error.message);
+      return NextResponse.json({ error: "Sync failed" }, { status: 502 });
     }
     console.error("Setu sync failed", error);
     return NextResponse.json({ error: "Sync failed" }, { status: 502 });

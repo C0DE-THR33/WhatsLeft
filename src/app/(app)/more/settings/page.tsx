@@ -12,7 +12,7 @@ export default async function SettingsPage() {
     <div className="mx-auto max-w-md px-4 pt-6">
       <h1 className="mb-6 text-xl font-semibold text-fg">Settings</h1>
 
-      <section className="mb-6 rounded-2xl border border-border bg-surface p-5">
+      <section className="mb-6 rounded-card bg-surface shadow-card p-5">
         <p className="mb-1 text-xs font-medium uppercase tracking-wide text-fg-muted">Account</p>
         <p className="text-sm text-fg">{user.email}</p>
       </section>
@@ -20,11 +20,11 @@ export default async function SettingsPage() {
       <section>
         <p className="mb-3 text-xs font-medium uppercase tracking-wide text-fg-muted">Linked accounts</p>
         {linkedAccounts.length === 0 ? (
-          <p className="rounded-2xl border border-dashed border-border p-6 text-center text-sm text-fg-muted">
+          <p className="rounded-card border border-dashed border-border p-6 text-center text-sm text-fg-muted">
             No bank accounts connected yet.
           </p>
         ) : (
-          <div className="overflow-hidden rounded-2xl border border-border bg-surface">
+          <div className="overflow-hidden rounded-card bg-surface shadow-card">
             {linkedAccounts.map((account, i) => (
               <div key={account.id} className={`flex items-center justify-between px-4 py-3.5 ${i > 0 ? "border-t border-border" : ""}`}>
                 <div>

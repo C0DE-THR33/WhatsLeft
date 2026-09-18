@@ -24,7 +24,7 @@ export function SignOutButton() {
     <button
       onClick={handleSignOut}
       disabled={signingOut}
-      className="w-full rounded-lg border border-border px-4 py-3 text-left text-sm font-medium text-danger disabled:opacity-60"
+      className="w-full rounded-pill border border-border px-4 py-3 text-left text-sm font-medium text-danger-fg disabled:opacity-60"
     >
       {signingOut ? "Signing out…" : "Sign out"}
     </button>

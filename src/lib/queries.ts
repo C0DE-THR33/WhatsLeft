@@ -3,7 +3,7 @@ import { toNum } from "@/lib/utils";
 import { asCategoryIcon, asCategoryColor, UNCATEGORIZED_LABEL } from "@/lib/categories";
 import { computeDonutSegments, type DonutResult } from "@/lib/donut";
 import { currentMonthKey, monthRange, type MonthKey } from "@/lib/dates";
-import { TransactionDirection } from "@prisma/client";
+import { TransactionDirection, CategorySource, AccountType } from "@prisma/client";
 
 // The entire query layer. One function per page's actual need, called
 // directly from a Server Component — not a generic repository/DAO
@@ -113,7 +113,10 @@ export async function getHomeData(userId: string): Promise<HomeData> {
     getCategoryBreakdown(userId, range),
     db.monthlyBudget.findUnique({ where: { userId_year_month: { userId, year: key.year, month: key.month } } }),
     getRecentTransactions(userId, 8),
-    db.linkedAccount.count({ where: { userId } }),
+    // Excludes the synthetic CASH account (lib/cash.ts) on purpose:
+    // adding one cash transaction must not make the app believe a bank is
+    // connected and quietly retire the "Connect a bank account" prompt.
+    db.linkedAccount.count({ where: { userId, NOT: { accountType: AccountType.CASH } } }),
   ]);
 
   const budgetTotal = budget ? toNum(budget.totalAmount) : null;
@@ -302,4 +305,67 @@ export async function getInvestmentsData(userId: string) {
 export async function getBillScansData(userId: string) {
   const scans = await db.billScan.findMany({ where: { userId }, orderBy: { createdAt: "desc" } });
   return scans.map((scan) => ({ ...scan, amount: scan.amount === null ? null : toNum(scan.amount) }));
+}
+
+// ---------------------------------------------------------------------------
+// Transaction detail
+// ---------------------------------------------------------------------------
+
+export interface TransactionDetail {
+  id: string;
+  amount: number;
+  direction: TransactionDirection;
+  description: string;
+  merchantName: string | null;
+  mode: string | null;
+  transactionDate: Date;
+  categorySource: CategorySource | null;
+  category: { id: string; name: string; icon: string; color: string } | null;
+  account: { fipName: string; maskedAccountNumber: string; isCash: boolean };
+}
+
+/**
+ * One transaction, for its detail page.
+ *
+ * The userId in the where clause is the ownership check, not a filter for
+ * convenience: a Transaction reaches its owner only via
+ * linkedAccount.userId (CONVENTIONS.md #5). Fetching by id alone and
+ * checking afterwards would still have leaked the row into this process;
+ * scoping the query means a transaction that isn't yours is simply not
+ * found, and the page renders notFound().
+ */
+export async function getTransactionDetail(
+  userId: string,
+  transactionId: string,
+): Promise<TransactionDetail | null> {
+  const row = await db.transaction.findFirst({
+    where: { id: transactionId, linkedAccount: { userId } },
+    include: { category: true, linkedAccount: true },
+  });
+
+  if (!row) return null;
+
+  return {
+    id: row.id,
+    amount: toNum(row.amount),
+    direction: row.direction,
+    description: row.description,
+    merchantName: row.merchantName,
+    mode: row.mode,
+    transactionDate: row.transactionDate,
+    categorySource: row.categorySource,
+    category: row.category
+      ? {
+          id: row.category.id,
+          name: row.category.name,
+          icon: row.category.icon,
+          color: row.category.color,
+        }
+      : null,
+    account: {
+      fipName: row.linkedAccount.fipName,
+      maskedAccountNumber: row.linkedAccount.maskedAccountNumber,
+      isCash: row.linkedAccount.accountType === AccountType.CASH,
+    },
+  };
 }

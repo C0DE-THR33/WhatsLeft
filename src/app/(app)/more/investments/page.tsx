@@ -12,22 +12,22 @@ export default async function InvestmentsPage() {
     <div className="mx-auto max-w-md px-4 pt-6">
       <h1 className="mb-6 text-xl font-semibold text-fg">Investments</h1>
 
-      <section className="mb-6 rounded-2xl border border-border bg-surface p-5">
+      <section className="mb-6 rounded-card bg-surface shadow-card p-5">
         <p className="text-xs font-medium uppercase tracking-wide text-fg-muted">Current value</p>
         <p className="mt-1 text-2xl font-semibold text-fg">{formatCurrency(data.totalCurrent)}</p>
-        <p className={`mt-1 text-sm ${data.totalGain >= 0 ? "text-success" : "text-danger"}`}>
+        <p className={`mt-1 text-sm ${data.totalGain >= 0 ? "text-success-fg" : "text-danger-fg"}`}>
           {data.totalGain >= 0 ? "+" : ""}
           {formatCurrency(data.totalGain)} overall
         </p>
       </section>
 
       {data.investments.length === 0 ? (
-        <p className="rounded-2xl border border-dashed border-border p-6 text-center text-sm text-fg-muted">
+        <p className="rounded-card border border-dashed border-border p-6 text-center text-sm text-fg-muted">
           No investments added yet. This is a manually-maintained ledger — there&apos;s no live
           brokerage sync in v1.
         </p>
       ) : (
-        <div className="overflow-hidden rounded-2xl border border-border bg-surface">
+        <div className="overflow-hidden rounded-card bg-surface shadow-card">
           {data.investments.map((inv, i) => {
             const gain = inv.currentValue - inv.investedAmount;
             return (
@@ -38,7 +38,7 @@ export default async function InvestmentsPage() {
                 </div>
                 <div className="text-right">
                   <p className="text-sm font-medium text-fg">{formatCurrency(inv.currentValue)}</p>
-                  <p className={`text-xs ${gain >= 0 ? "text-success" : "text-danger"}`}>
+                  <p className={`text-xs ${gain >= 0 ? "text-success-fg" : "text-danger-fg"}`}>
                     {gain >= 0 ? "+" : ""}
                     {formatCurrency(gain)}
                   </p>

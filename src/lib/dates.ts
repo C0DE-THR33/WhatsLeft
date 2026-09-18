@@ -44,3 +44,30 @@ export function formatShortDate(date: Date): string {
 export function isSameMonth(date: Date, key: MonthKey): boolean {
   return date.getUTCFullYear() === key.year && date.getUTCMonth() + 1 === key.month;
 }
+
+/** Total days in a month, leap years included. */
+export function daysInMonth({ year, month }: MonthKey): number {
+  // Day 0 of the *next* month is the last day of this one, which sidesteps
+  // needing a leap-year rule of our own.
+  return new Date(Date.UTC(year, month, 0)).getUTCDate();
+}
+
+/**
+ * Days left in the current month, counting today as one of them — the
+ * denominator for "you can keep spending X a day".
+ *
+ * Counting today matters: on the last day of the month this returns 1, not
+ * 0, so the caller divides by 1 rather than dividing by zero and rendering
+ * an Infinity. The elapsed portion of today is deliberately ignored; a
+ * daily allowance that shrank hour by hour would be unusable.
+ */
+export function daysRemainingInMonth(now: Date = new Date()): number {
+  const total = daysInMonth(currentMonthKey(now));
+  return total - now.getDate() + 1;
+}
+
+/** How far through the month we are, 0-1 — the "Today" marker's position. */
+export function monthProgress(now: Date = new Date()): number {
+  const total = daysInMonth(currentMonthKey(now));
+  return (now.getDate() - 1) / total;
+}

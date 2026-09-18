@@ -7,8 +7,10 @@
 // Usage:
 //   npx tsx prisma/seed-demo.ts you@example.com
 
-import { PrismaClient, AccountType, ConsentStatus, TransactionDirection, InvestmentType } from "@prisma/client";
+import { PrismaClient, AccountType, ConsentStatus, TransactionDirection, InvestmentType, CategorySource } from "@prisma/client";
 import { currentMonthKey, shiftMonth, monthRange } from "../src/lib/dates";
+import { categorizeByRules } from "../src/lib/categorize";
+import { asCategoryIcon } from "../src/lib/categories";
 
 const db = new PrismaClient();
 
@@ -19,6 +21,20 @@ const MERCHANTS: Record<string, string[]> = {
   "Bills & Utilities": ["Airtel Postpaid", "Tata Power", "Jio Fiber", "LIC Premium"],
   "Entertainment": ["Netflix", "BookMyShow", "Spotify", "PVR Cinemas"],
 };
+
+// Merchants the rule engine genuinely cannot place, used for the slice of
+// demo data that should stay uncategorized. Previously that slice was a
+// random 10% of ALL merchants, which produced demo rows like
+// "Uber — Uncategorized" — nonsense once lib/categorize.ts exists, and the
+// exact thing that made the feature look broken. The uncategorized state
+// still needs real data behind it (CONVENTIONS.md #4), so it gets
+// merchants that are honestly ambiguous instead of familiar ones.
+const UNRECOGNIZABLE_MERCHANTS = [
+  "Kirti Enterprises",
+  "SPTM Services",
+  "Paytm Merchant 4471",
+  "NEFT Transfer 9921",
+];
 
 function randomAmount(min: number, max: number): string {
   return (Math.random() * (max - min) + min).toFixed(2);
@@ -73,15 +89,26 @@ async function main() {
     const transactionCount = monthsAgo === 0 ? 14 : 22;
 
     for (let i = 0; i < transactionCount; i++) {
-      const categoryNames = Object.keys(MERCHANTS);
-      const categoryName = categoryNames[Math.floor(Math.random() * categoryNames.length)];
-      const merchants = MERCHANTS[categoryName];
-      const merchantName = merchants[Math.floor(Math.random() * merchants.length)];
-      const category = categoryByName.get(categoryName);
+      // ~10% get a merchant no rule can place, so the uncategorized row in
+      // the breakdown has something real behind it without any recognizable
+      // merchant being left unsorted.
+      const unrecognizable = Math.random() < 0.1;
+      const merchantName = unrecognizable
+        ? UNRECOGNIZABLE_MERCHANTS[Math.floor(Math.random() * UNRECOGNIZABLE_MERCHANTS.length)]
+        : (() => {
+            const names = Object.keys(MERCHANTS);
+            const pick = MERCHANTS[names[Math.floor(Math.random() * names.length)]];
+            return pick[Math.floor(Math.random() * pick.length)];
+          })();
 
-      // ~10% left deliberately uncategorized, so the "uncategorized" row
-      // in the breakdown has something real to show (CONVENTIONS.md #4).
-      const leaveUncategorized = Math.random() < 0.1;
+      // Categorized by the same rules the app uses at ingest, rather than
+      // by the seed knowing the answer in advance — so the demo data
+      // reflects what the rule engine can actually do, and a gap in the
+      // rules shows up here instead of hiding behind seeded truth.
+      const match = categorizeByRules({ merchantName });
+      const category = match
+        ? categories.find((c) => asCategoryIcon(c.icon) === match.icon)
+        : undefined;
 
       await db.transaction.create({
         data: {
@@ -93,7 +120,8 @@ async function main() {
           merchantName,
           mode: "UPI",
           transactionDate: randomDateInMonth(key.year, key.month),
-          categoryId: leaveUncategorized ? null : category?.id,
+          categoryId: category?.id ?? null,
+          categorySource: category ? CategorySource.RULE : null,
         },
       });
       created++;

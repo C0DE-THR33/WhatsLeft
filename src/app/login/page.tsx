@@ -62,14 +62,14 @@ function LoginForm() {
 
   return (
     <div className="flex min-h-screen flex-col items-center justify-center gap-6 bg-bg px-6">
-      <div className="w-full max-w-sm rounded-2xl border border-border bg-surface p-6 shadow-sm">
+      <div className="w-full max-w-sm rounded-card bg-surface shadow-card p-6 shadow-sm">
         <h1 className="text-xl font-semibold text-fg">Sign in to SpendWise</h1>
         <p className="mt-1 text-sm text-fg-muted">
           We&apos;ll email you a magic link — no password needed.
         </p>
 
         {status === "sent" ? (
-          <p className="mt-6 rounded-lg bg-success/10 px-4 py-3 text-sm text-success">
+          <p className="mt-6 rounded-pill bg-success/10 px-4 py-3 text-sm text-success-fg">
             Check your inbox for a sign-in link.
           </p>
         ) : (
@@ -80,17 +80,17 @@ function LoginForm() {
               placeholder="you@example.com"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              className="rounded-lg border border-border bg-bg px-3 py-2 text-sm text-fg outline-none focus:border-accent"
+              className="rounded-pill border border-border bg-bg px-3 py-2 text-sm text-fg outline-none focus:border-accent"
             />
             <button
               type="submit"
               disabled={status === "sending"}
-              className="rounded-lg bg-accent px-3 py-2 text-sm font-medium text-accent-fg disabled:opacity-60"
+              className="rounded-pill bg-accent px-3 py-2 text-sm font-medium text-accent-fg disabled:opacity-60"
             >
               {status === "sending" ? "Sending…" : "Send magic link"}
             </button>
             {status === "error" && errorMessage ? (
-              <p className="text-sm text-danger">{errorMessage}</p>
+              <p className="text-sm text-danger-fg">{errorMessage}</p>
             ) : null}
           </form>
         )}

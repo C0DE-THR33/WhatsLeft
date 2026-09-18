@@ -5,8 +5,8 @@
 export function NotConfigured() {
   return (
     <div className="flex min-h-screen flex-col items-center justify-center gap-3 bg-bg px-6 text-center text-fg">
-      <div className="flex size-12 items-center justify-center rounded-2xl bg-cat-bills/15 text-2xl">
-        ⚙️
+      <div className="flex size-12 items-center justify-center rounded-card bg-accent-soft text-accent-soft-fg">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3.2" /><path d="M12 2.5v2.2M12 19.3v2.2M21.5 12h-2.2M4.7 12H2.5M18.7 5.3l-1.6 1.6M6.9 17.1l-1.6 1.6M18.7 18.7l-1.6-1.6M6.9 6.9 5.3 5.3" /></svg>
       </div>
       <h1 className="text-lg font-semibold">SpendWise isn&apos;t configured yet</h1>
       <p className="max-w-sm text-sm text-fg-muted">

@@ -38,7 +38,12 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     where: { id, linkedAccount: { userId } },
     data: {
       categoryId,
-      categorySource: categoryId ? CategorySource.MANUAL : null,
+      // MANUAL even when clearing. "Mark as uncategorized" is a decision,
+      // and recording it is what stops the automatic pass in
+      // lib/auto-categorize.ts from re-filing the row on its next run —
+      // with a null source here, a deliberate clear is indistinguishable
+      // from "never categorized" and gets silently overridden.
+      categorySource: CategorySource.MANUAL,
     },
   });
 

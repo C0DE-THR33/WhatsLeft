@@ -1,16 +1,19 @@
-"use client";
-
-import { useMemo, useState } from "react";
+import Link from "next/link";
 import { formatCurrency } from "@/lib/utils";
 import { formatShortDate } from "@/lib/dates";
-import { asCategoryIcon, asCategoryColor } from "@/lib/categories";
+import { asCategoryIcon, asCategoryColor, UNCATEGORIZED_LABEL } from "@/lib/categories";
 import { CategoryTile, DashedTile } from "./CategoryTile";
-import { CategorizeSheet, type CategoryOption } from "./CategorizeSheet";
 
-// Server Components fetch, Client Components only hold interaction state
-// (CONVENTIONS.md #4): this component receives already-fetched, already-
-// toNum()'d rows as props and owns only "which transaction's sheet is
-// open" and "which category filter is active."
+// Rows link to /transactions/[id]. This used to be a Client Component that
+// opened a categorize sheet on tap and held the resulting optimistic
+// override in state; a row can only do one thing on tap, and now that a
+// detail page exists, going there is the expected one. Categorizing moved
+// with it (TransactionCategoryEditor), which also means one component
+// writes categories instead of two.
+//
+// With no interaction state left, there is nothing for "use client" to buy
+// (CONVENTIONS.md #4) — so this renders on the server like the page that
+// holds it.
 
 export interface TransactionRow {
   id: string;
@@ -22,74 +25,64 @@ export interface TransactionRow {
   category: { id: string; name: string; icon: string; color: string } | null;
 }
 
-export function TransactionsList({
-  transactions,
-  categories,
-}: {
-  transactions: TransactionRow[];
-  categories: CategoryOption[];
-}) {
-  const [activeTransaction, setActiveTransaction] = useState<TransactionRow | null>(null);
-  const [overrides, setOverrides] = useState<Record<string, CategoryOption | null>>({});
-
-  const grouped = useMemo(() => groupByDay(transactions), [transactions]);
-
+export function TransactionsList({ transactions }: { transactions: TransactionRow[] }) {
   if (transactions.length === 0) {
     return (
-      <div className="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-border py-16 text-center">
+      <div className="flex flex-col items-center gap-2 rounded-card border border-dashed border-border py-16 text-center">
         <p className="text-sm font-medium text-fg">No transactions yet</p>
         <p className="max-w-xs text-sm text-fg-muted">
-          Connect a bank account to start seeing your spending here automatically.
+          Connect a bank account, or add a cash transaction with the + button on Home.
         </p>
       </div>
     );
   }
 
+  const grouped = groupByDay(transactions);
+
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex flex-col gap-5">
       {grouped.map(([day, rows]) => (
         <div key={day} className="flex flex-col gap-2">
-          <h3 className="px-1 text-xs font-medium uppercase tracking-wide text-fg-muted">{day}</h3>
-          <div className="overflow-hidden rounded-2xl border border-border bg-surface">
-            {rows.map((tx, i) => {
-              const override = overrides[tx.id];
-              const category = override !== undefined ? override : tx.category;
-
-              return (
-                <button
-                  key={tx.id}
-                  onClick={() => setActiveTransaction(tx)}
-                  className={`flex w-full items-center gap-3 px-4 py-3 text-left ${i > 0 ? "border-t border-border" : ""}`}
+          <h3 className="px-1 text-[11px] font-bold uppercase tracking-wide text-fg-faint">{day}</h3>
+          <div className="overflow-hidden rounded-card bg-surface shadow-card">
+            {rows.map((tx, i) => (
+              <Link
+                key={tx.id}
+                href={`/transactions/${tx.id}`}
+                className={`flex w-full items-center gap-3 px-4 py-3 text-left ${
+                  i > 0 ? "border-t border-border" : ""
+                }`}
+              >
+                {tx.category ? (
+                  <CategoryTile
+                    icon={asCategoryIcon(tx.category.icon)}
+                    color={asCategoryColor(tx.category.color)}
+                    size="sm"
+                  />
+                ) : (
+                  <DashedTile size="sm" label="question" />
+                )}
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-semibold text-fg">
+                    {tx.merchantName ?? tx.description}
+                  </p>
+                  <p className="truncate text-[11px] font-medium text-fg-faint">
+                    {tx.category?.name ?? UNCATEGORIZED_LABEL}
+                  </p>
+                </div>
+                <span
+                  className={`shrink-0 text-sm font-bold tnum ${
+                    tx.direction === "CREDIT" ? "text-success-fg" : "text-fg"
+                  }`}
                 >
-                  {category ? (
-                    <CategoryTile icon={asCategoryIcon(category.icon)} color={asCategoryColor(category.color)} size="sm" />
-                  ) : (
-                    <DashedTile size="sm" label="question" />
-                  )}
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium text-fg">{tx.merchantName ?? tx.description}</p>
-                    <p className="truncate text-xs text-fg-muted">{category?.name ?? "Uncategorized"}</p>
-                  </div>
-                  <span className={`text-sm font-semibold ${tx.direction === "CREDIT" ? "text-success" : "text-fg"}`}>
-                    {tx.direction === "CREDIT" ? "+" : "-"}
-                    {formatCurrency(tx.amount)}
-                  </span>
-                </button>
-              );
-            })}
+                  {tx.direction === "CREDIT" ? "+" : "-"}
+                  {formatCurrency(tx.amount)}
+                </span>
+              </Link>
+            ))}
           </div>
         </div>
       ))}
-
-      <CategorizeSheet
-        transaction={activeTransaction}
-        categories={categories}
-        onClose={() => setActiveTransaction(null)}
-        onCategorized={(transactionId, category) => {
-          setOverrides((prev) => ({ ...prev, [transactionId]: category }));
-          setActiveTransaction(null);
-        }}
-      />
     </div>
   );
 }

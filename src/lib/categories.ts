@@ -57,3 +57,17 @@ export function asCategoryColor(value: string): CategoryColor {
 }
 
 export const UNCATEGORIZED_LABEL = "Uncategorized";
+
+/**
+ * A category as the UI needs it — the shape every picker renders from.
+ * Lives here rather than beside one component because three different
+ * components take it as a prop, and a type owned by whichever component
+ * happened to define it first is how import cycles start (#2: does it
+ * return JSX? No → lib/).
+ */
+export interface CategoryOption {
+  id: string;
+  name: string;
+  icon: string;
+  color: string;
+}

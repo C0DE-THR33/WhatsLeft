@@ -65,6 +65,41 @@ imports until a sandbox project exists.
    go to Account Aggregator → **Set up another FIU** (company PAN and GSTIN;
    sandbox does not validate them) → open **FIU businesses**, pick the
    account, and create the **Account Aggregator - Data** product.
+
+   **Check which account aggregator the product instance is wired to, and
+   do not accept Onemoney.** This is the setting that decides whether a
+   consent can be *approved* rather than merely created, it is chosen on the
+   Bridge rather than in this repo, and it is invisible until the last step
+   of the flow.
+
+   Onemoney's UAT answers no mobile number its team has not pre-whitelisted
+   on request (1–2 business days). Until then it returns a consent id and an
+   approval URL exactly like a working AA, and only its own screen — three
+   redirects away from anything this codebase controls — refuses every OTP,
+   including the documented `123456`, with *"Incorrect OTP! Please check."*
+   That is what stalled the first attempt at this integration, and it is not
+   something the app can detect, retry or route around.
+
+   **Leave `SETU_AA_HANDLE` empty** so the app sends a bare mobile number.
+   That does not pick an AA — nothing in the request can — it just avoids
+   naming one the FIU is not registered with. Probed against the live
+   sandbox on one set of credentials:
+
+   | `vua` sent | Result |
+   |---|---|
+   | `9999999999` | **201 in 0.9s** — routed to whatever the Bridge says |
+   | `9999999999@onemoney` | 201 — the same AA, named explicitly |
+   | `9999999999@setu` | 500 — handle recognised, AA unreachable |
+   | `9999999999@finvu` | 400 — `fair use rules template id: null` |
+   | `9999999999@anumati` | 400 — `not as per Fair Usage Policy` |
+   | `9999999999@saafe` | 400 — handle not supported |
+
+   The finvu and anumati rejections are this FIU not being registered with
+   those AAs rather than a malformed request: a null fair-use template means
+   no policy exists for the FIU there, so its permitted consent frequency is
+   zero. Getting one of them is an onboarding request to Setu
+   (`aa@setu.co`), not a config change.
+
 2. **Configure the consent object** in Step 1. Purpose, FI types, fetch type
    and consent mode all live on the Bridge, not in this codebase — the app
    only sends the parts that vary per request (who, how long, over what date
@@ -113,6 +148,12 @@ imports until a sandbox project exists.
    is in your Bridge project's test panel, since it changes independently of
    this repo.
 
+   Two mock FIPs are attached to sandbox products, and they behave
+   differently at the OTP step: **Setu FIP** sends a dynamic OTP to the
+   number the consent was raised for (which nobody owns, so it is a dead
+   end locally), while **Setu FIP-2** uses the static OTP `123456`. Pick
+   FIP-2 on the account-linking screen unless you have a reason not to.
+
 What happens after you approve:
 
 | Step | Route | What it does |
@@ -125,6 +166,54 @@ What happens after you approve:
 **Sync is idempotent and never overwrites a human.** Re-running it no-ops
 rows already stored (`[linkedAccountId, externalId]` is a real compound
 unique) and leaves any category the user set by hand alone.
+
+## Running the flow without Setu
+
+The AA is the one part of this flow the repo cannot fix from here. A
+product instance is wired to a specific account aggregator on the Bridge,
+and if that AA will not approve a consent — as Onemoney's UAT will not,
+for any number it has not pre-whitelisted — then nothing downstream of the
+approval screen can be exercised at all. `scripts/mock-aa.ts` stands in for
+the aggregator so the rest of the flow stays testable:
+
+```bash
+npm run mock:aa -- --webhook http://localhost:3000/api/aa/webhook
+```
+
+Then point the app at it and restart the dev server:
+
+```
+SETU_AA_BASE_URL=http://localhost:4100
+```
+
+That is the whole integration. It serves the same four endpoints under the
+same `/v2` prefix, so the app reaches it through the ordinary client with
+the ordinary credentials check, and no code path is special-cased for it —
+switching back to the real gateway is the same one line.
+
+Open `/connect-bank`, enter any 10-digit number, and the mock's approval
+screen offers two accounts to tick. Approving redirects back with the same
+`?success=true&id=…` Setu appends, and the app links, fetches and
+categorizes roughly 470 transactions across twelve months.
+
+It is a stand-in for the *aggregator*, not a fake for `lib/setu.ts`, and
+the payloads are deliberately awkward in the ways real relayed FIP data is:
+XML-derived casing (`fipID`, `FIstatus`, `maskedAccNumber`), a single
+transaction arriving as a bare object rather than a one-element array, and
+a coarse `DEPOSIT` on the consent against a finer `CURRENT` in the
+statement summary. A mock that sent tidy JSON would let a broken parser
+pass.
+
+| Flag | Effect |
+|---|---|
+| `--port 4200` | Serve somewhere else |
+| `--webhook <url>` | Post `CONSENT_STATUS_UPDATE` / `SESSION_STATUS_UPDATE` notifications, so the out-of-band path runs too |
+| `--pending-reads 3` | Make sessions report `PENDING` for three polls before delivering |
+| `--partial` | Second FIP `TIMEOUT`s and the session reports `PARTIAL` |
+
+Statement data is generated from a seeded PRNG, so it is identical across
+runs — which is what makes "sync twice, expect the row count not to move" a
+test of the upsert rather than of the generator.
 
 ## Scripts
 
@@ -140,6 +229,7 @@ unique) and leaves any category the user set by hand alone.
 | `npm run dev:signin -- <email>` | Mint a sign-in link without sending email (dev only) |
 | `npm run db:categorize -- <email>` | Apply merchant rules to existing uncategorized transactions (`--dry-run` to preview) |
 | `npm run setu:smoke -- <cmd>` | Probe the Setu AA sandbox from the terminal (`consent` / `status` / `fetch`, `--raw`) |
+| `npm run mock:aa` | Serve a local stand-in for the AA gateway, so the bank-connect flow runs without Setu |
 
 ### Signing in locally
 

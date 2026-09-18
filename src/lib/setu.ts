@@ -76,14 +76,39 @@ function baseUrl(): string {
 const API_VERSION = "/v2";
 
 /**
- * The AA handle a mobile number is turned into a VUA with (`9999999999` →
- * `9999999999@onemoney`). Which AA a product instance is wired to is a
- * Bridge setting, so it has to be configurable here to match.
+ * Turns a mobile number into the `vua` the consent endpoint wants. The
+ * gateway accepts either `9999999999` or `9999999999@<aa>`, and an empty
+ * `SETU_AA_HANDLE` sends the bare form.
+ *
+ * Empty is the right default, but not because it selects an AA — it does
+ * not. Which account aggregator a consent is routed to is fixed by the
+ * product instance on the Bridge. Sending the bare number simply avoids
+ * naming an AA this FIU is not onboarded with, which is the difference
+ * between a consent and a 400. Probed against the live sandbox on one set
+ * of credentials:
+ *
+ *   9999999999                201 in 0.9s  — routed to whatever the Bridge says
+ *   9999999999@onemoney       201          — same AA, named explicitly
+ *   9999999999@setu           500          — recognised, AA unreachable
+ *   9999999999@finvu          400          — "fair use rules template id: null"
+ *   9999999999@anumati        400          — "not as per Fair Usage Policy"
+ *   9999999999@nonsense       400          — "entity handle not supported"
+ *
+ * The finvu/anumati 400s are the FIU not being registered with those AAs,
+ * not a bad request — a null fair-use template means no policy exists for
+ * this FIU there, so the permitted frequency is zero.
+ *
+ * None of which can rescue an Onemoney-backed product instance: its UAT
+ * answers no mobile number its team has not pre-whitelisted on request
+ * (1–2 business days), so its approval screen refuses even the documented
+ * `123456` with "Incorrect OTP! Please check." Verified in a browser. That
+ * is a Bridge/AA-onboarding problem, and no value of this variable and no
+ * change in this file can work around it.
  */
 export function toVua(mobileNumber: string): string {
   const digits = mobileNumber.replace(/\D/g, "").slice(-10);
-  const handle = process.env.SETU_AA_HANDLE ?? "onemoney";
-  return `${digits}@${handle}`;
+  const handle = process.env.SETU_AA_HANDLE?.trim().replace(/^@/, "");
+  return handle ? `${digits}@${handle}` : digits;
 }
 
 export function isValidMobileNumber(mobileNumber: string): boolean {

@@ -13,7 +13,8 @@
     "db:seed:demo": "tsx prisma/seed-demo.ts",
     "dev:signin": "tsx scripts/dev-signin.ts",
     "db:categorize": "tsx scripts/categorize-existing.ts",
-    "setu:smoke": "tsx scripts/setu-smoke.ts"
+    "setu:smoke": "tsx scripts/setu-smoke.ts",
+    "mock:aa": "tsx scripts/mock-aa.ts"
   },
   "dependencies": {
     "@prisma/client": "6.19.3",

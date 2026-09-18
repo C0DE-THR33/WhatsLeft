@@ -106,15 +106,30 @@ export async function linkConsentAccounts(consentId: string): Promise<LinkConsen
     // nullable (the synthetic CASH account has none), and Postgres treats
     // every NULL as distinct, so ON CONFLICT would never fire and every
     // re-run would insert a duplicate (CONVENTIONS.md #6).
+    //
+    // Deliberately NOT scoped to consentId. linkRefNumber identifies the
+    // account at the FIP, and it outlives the consent it was first linked
+    // under — consents expire after twelve months and people reconnect. If
+    // this matched on the consent too, every re-consent would miss and
+    // create a second row for the same bank account, and the user's account
+    // list would grow one phantom entry per reconnection. Worse, the
+    // phantoms would never fill: ingest matches transactions on
+    // [userId, linkRefNumber] alone, so it keeps writing to whichever row
+    // came first while the newest one sits at zero forever. Verified by
+    // running the flow twice against the mock gateway — two accounts became
+    // four, and the two new rows stayed empty and unsynced.
     const existing = await db.linkedAccount.findFirst({
-      where: { userId: stored.userId, consentId, linkRefNumber: account.linkRefNumber },
+      where: { userId: stored.userId, linkRefNumber: account.linkRefNumber },
       select: { id: true },
     });
 
     if (existing) {
       await db.linkedAccount.update({
         where: { id: existing.id },
-        data: { consentStatus: status, consentExpiresAt: consent.consentExpiry },
+        // consentId moves to the consent that is now backing this link, so
+        // the row tracks the live consent rather than the expired one it
+        // was created under.
+        data: { consentId, consentStatus: status, consentExpiresAt: consent.consentExpiry },
       });
       linkedAccountIds.push(existing.id);
       continue;
@@ -157,6 +172,13 @@ export async function startDataSession(consentId: string): Promise<{ dataSession
     dataRange: { from: stored.dataRangeFrom, to: stored.dataRangeTo },
   });
 }
+
+/**
+ * Rows per INSERT. Large enough that a year of statements is two or three
+ * round trips rather than hundreds, small enough to stay well inside
+ * Postgres' 65535-parameter ceiling at ~9 columns a row.
+ */
+const TRANSACTION_INSERT_CHUNK = 500;
 
 export interface IngestResult {
   /** Combined session status from Setu: PENDING / PARTIAL / COMPLETED / … */
@@ -206,41 +228,53 @@ export async function ingestDataSession(params: {
     }
 
     if (account.transactions.length > 0) {
-      await db.$transaction(
-        account.transactions.map((tx) => {
-          // Setu's AA payload carries only a narration, no separate
-          // merchant field — which is exactly the "UPI/DR/…/SWIGGY/…"
-          // shape the categorization rules expect.
-          const categoryId = pickCategoryId(iconCategories, { description: tx.description });
+      const rows = account.transactions.map((tx) => {
+        // Setu's AA payload carries only a narration, no separate merchant
+        // field — which is exactly the "UPI/DR/…/SWIGGY/…" shape the
+        // categorization rules expect.
+        const categoryId = pickCategoryId(iconCategories, { description: tx.description });
 
-          return db.transaction.upsert({
-            where: {
-              linkedAccountId_externalId: {
-                linkedAccountId: linkedAccount.id,
-                externalId: tx.externalId,
-              },
-            },
-            update: {},
-            create: {
-              linkedAccountId: linkedAccount.id,
-              externalId: tx.externalId,
-              amount: tx.amount,
-              direction:
-                tx.direction === "CREDIT"
-                  ? TransactionDirection.CREDIT
-                  : TransactionDirection.DEBIT,
-              description: tx.description,
-              mode: tx.mode,
-              transactionDate: tx.transactionDate,
-              categoryId,
-              // Only claim a source when a rule actually fired — an
-              // unmatched row stays honestly uncategorized (#4).
-              categorySource: categoryId ? CategorySource.RULE : null,
-            },
-          });
-        }),
-      );
-      synced += account.transactions.length;
+        return {
+          linkedAccountId: linkedAccount.id,
+          externalId: tx.externalId,
+          amount: tx.amount,
+          direction:
+            tx.direction === "CREDIT" ? TransactionDirection.CREDIT : TransactionDirection.DEBIT,
+          description: tx.description,
+          mode: tx.mode,
+          transactionDate: tx.transactionDate,
+          categoryId,
+          // Only claim a source when a rule actually fired — an unmatched
+          // row stays honestly uncategorized (#4).
+          categorySource: categoryId ? CategorySource.RULE : null,
+        };
+      });
+
+      // createMany + skipDuplicates, not a $transaction of per-row upserts.
+      // An upsert with an empty `update` *is* insert-if-absent, so this is
+      // the same operation expressed as one `INSERT … ON CONFLICT DO
+      // NOTHING` per chunk instead of one round trip per row — and it keeps
+      // the same guarantee, since a conflicting row is left exactly as it
+      // is and a category the user set by hand survives a re-sync
+      // (CONVENTIONS.md #4b, "never overwrite a human").
+      //
+      // The old shape did not survive a real statement. A year of history
+      // for one account is a few hundred rows, and several hundred
+      // sequential round trips inside a single interactive transaction runs
+      // past Supabase's statement timeout — Postgres 57014, "canceling
+      // statement due to statement timeout", which rolls the whole account
+      // back while the account before it stays committed. The failure looks
+      // like a sync that hangs and then half-imports.
+      for (let start = 0; start < rows.length; start += TRANSACTION_INSERT_CHUNK) {
+        const { count } = await db.transaction.createMany({
+          data: rows.slice(start, start + TRANSACTION_INSERT_CHUNK),
+          skipDuplicates: true,
+        });
+        // Rows actually written, not rows offered: a re-sync of a statement
+        // already stored should report 0, not claim it imported everything
+        // a second time.
+        synced += count;
+      }
     }
 
     // Refresh the account type from the FIP's own summary. The consent only
